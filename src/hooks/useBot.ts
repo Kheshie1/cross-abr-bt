@@ -82,10 +82,11 @@ export function useRealtimeTrades() {
           qc.invalidateQueries({ queryKey: ["bot-status"] });
           const trade = payload.new as any;
           // Only toast for the YES leg (avoid double notification per arb)
-          if (trade.side === "BUY_YES" || trade.side === "BUY") {
+          if (trade.side?.startsWith("BUY_YES")) {
+            const platform = trade.side.includes("@") ? trade.side.split("@")[1] : "";
             const profitStr = trade.profit_loss ? `+$${Number(trade.profit_loss).toFixed(4)}` : "";
-            toast.success("⚡ Arb Executed!", {
-              description: `${trade.market_question?.slice(0, 70)} ${profitStr}`,
+            toast.success("⚡ Cross-Platform Arb!", {
+              description: `${trade.market_question?.slice(0, 60)} ${platform ? `(${platform})` : ""} ${profitStr}`,
               duration: 8000,
             });
           }

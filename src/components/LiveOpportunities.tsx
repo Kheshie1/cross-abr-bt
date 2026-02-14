@@ -14,38 +14,46 @@ export function LiveOpportunities() {
       <CardHeader className="pb-3">
         <CardTitle className="text-sm font-medium text-accent flex items-center gap-2">
           <Flame className="h-4 w-4" />
-          LIVE ARBS — ENDING SOON
+          LIVE CROSS-PLATFORM ARBS — ENDING SOON
           {isLoading && <Loader2 className="ml-2 inline h-3 w-3 animate-spin" />}
         </CardTitle>
         <p className="text-xs text-muted-foreground">
-          Arb opportunities on markets resolving within 48h — lock in guaranteed profit before resolution
+          Cross-platform arbs on markets resolving within 48h — Polymarket × Kalshi
         </p>
       </CardHeader>
       <CardContent className="space-y-2 max-h-[450px] overflow-y-auto">
         {live.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-8">
-            {isLoading ? "Scanning live markets..." : "No live arb opportunities right now"}
+            {isLoading ? "Scanning both platforms..." : "No cross-platform arbs ending soon"}
           </p>
         ) : (
-          live.map((m: any) => (
+          live.map((m: any, i: number) => (
             <div
-              key={m.market_id}
+              key={`${m.poly_market?.id}-${i}`}
               className="flex items-start justify-between rounded-md border border-border bg-secondary/30 p-3 slide-in"
             >
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate">{m.question}</p>
+                <p className="text-sm font-medium truncate">
+                  {m.is_arb && "✅ "}{m.poly_market?.question || "Unknown"}
+                </p>
                 <div className="mt-1.5 flex flex-wrap items-center gap-2">
                   <Badge variant="outline" className="text-xs bg-profit/10 text-profit border-profit/30">
-                    Yes ${(m.yes_price ?? 0).toFixed(3)} + No ${(m.no_price ?? 0).toFixed(3)}
+                    YES@{(m.buy_yes_platform || "?").toUpperCase()} ${(m.buy_yes_price ?? 0).toFixed(3)}
                   </Badge>
-                  <Badge className="bg-accent/15 text-accent border-accent/30 text-xs font-bold">
-                    +{m.spread_pct ?? 0}% guaranteed
+                  <span className="text-xs text-muted-foreground">+</span>
+                  <Badge variant="outline" className="text-xs bg-accent/10 text-accent border-accent/30">
+                    NO@{(m.buy_no_platform || "?").toUpperCase()} ${(m.buy_no_price ?? 0).toFixed(3)}
+                  </Badge>
+                  <Badge className={`text-xs font-bold ${
+                    m.is_arb ? "bg-profit/20 text-profit border-profit/40" : "bg-muted text-muted-foreground border-border"
+                  }`}>
+                    {(m.spread_pct ?? 0) > 0 ? "+" : ""}{m.spread_pct ?? 0}% spread
                   </Badge>
                   <span className="flex items-center gap-1 text-xs text-muted-foreground">
                     <Clock className="h-3 w-3" />
-                    {m.hours_left < 1
-                      ? `${Math.round(m.hours_left * 60)}m left`
-                      : `${m.hours_left}h left`}
+                    {(m.hours_left ?? 0) < 1
+                      ? `${Math.round((m.hours_left ?? 0) * 60)}m left`
+                      : `${m.hours_left ?? 0}h left`}
                   </span>
                 </div>
               </div>
@@ -55,15 +63,15 @@ export function LiveOpportunities() {
                 className="ml-2 text-accent hover:text-accent hover:bg-accent/10"
                 onClick={() =>
                   execute.mutate({
-                    market_id: m.market_id,
-                    question: m.question,
-                    yes_token_id: m.yes_token_id,
-                    no_token_id: m.no_token_id,
-                    yes_price: m.yes_price,
-                    no_price: m.no_price,
+                    market_id: m.poly_market?.id,
+                    question: m.poly_market?.question,
+                    buy_yes_platform: m.buy_yes_platform,
+                    buy_no_platform: m.buy_no_platform,
+                    buy_yes_price: m.buy_yes_price,
+                    buy_no_price: m.buy_no_price,
                   })
                 }
-                disabled={execute.isPending}
+                disabled={execute.isPending || !m.is_arb}
               >
                 <ArrowRight className="h-4 w-4" />
               </Button>
