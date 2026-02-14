@@ -33,7 +33,7 @@ export function BotSettings({ settings }: BotSettingsProps) {
       <CardHeader className="pb-3">
         <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
           <Settings className="h-4 w-4" />
-          BOT SETTINGS
+          ARB BOT SETTINGS
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">

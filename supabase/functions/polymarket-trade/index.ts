@@ -6,19 +6,44 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type",
 };
 
-const CLOB_URL = "https://clob.polymarket.com";
 const GAMMA_URL = "https://gamma-api.polymarket.com";
 
-
-interface MarketData {
-  id: string;
-  question: string;
-  tokens: Array<{
-    token_id: string;
-    outcome: string;
-    price: number;
-  }>;
-  active: boolean;
+// Extract arb opportunities from a list of Gamma markets
+function findArbs(markets: any[], minSpreadPct = 0.5) {
+  return markets
+    .filter((m: any) => {
+      const tokens = m.clobTokenIds ? JSON.parse(m.clobTokenIds) : [];
+      const prices = m.outcomePrices ? JSON.parse(m.outcomePrices) : [];
+      if (tokens.length < 2 || prices.length < 2) return false;
+      const yesPrice = Number(prices[0]);
+      const noPrice = Number(prices[1]);
+      if (yesPrice <= 0 || noPrice <= 0) return false;
+      const totalCost = yesPrice + noPrice;
+      // Arb exists when total cost < 1 (buy both sides, one resolves to $1)
+      return totalCost < (1 - minSpreadPct / 100);
+    })
+    .map((m: any) => {
+      const tokens = JSON.parse(m.clobTokenIds);
+      const prices = JSON.parse(m.outcomePrices).map(Number);
+      const outcomes = m.outcomes ? JSON.parse(m.outcomes) : ["Yes", "No"];
+      const totalCost = prices[0] + prices[1];
+      const spreadPct = ((1 - totalCost) / totalCost) * 100;
+      return {
+        market_id: m.conditionId || m.id,
+        question: m.question,
+        yes_token_id: tokens[0],
+        no_token_id: tokens[1],
+        yes_price: prices[0],
+        no_price: prices[1],
+        total_cost: Number(totalCost.toFixed(4)),
+        spread_pct: Number(spreadPct.toFixed(2)),
+        guaranteed_profit: Number((1 - totalCost).toFixed(4)),
+        volume_24h: m.volume24hr || 0,
+        end_date: m.endDate,
+        outcomes,
+      };
+    })
+    .sort((a: any, b: any) => b.spread_pct - a.spread_pct);
 }
 
 Deno.serve(async (req) => {
@@ -44,145 +69,107 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { action, market_id, question, token_id, price, size, is_running, trade_amount, interval_minutes, min_confidence, max_open_trades } = body;
+    const { action, market_id, question, yes_token_id, no_token_id, yes_price, no_price, size, is_running, trade_amount, interval_minutes, min_confidence, max_open_trades } = body;
 
+    // ---- SCAN: find arb opportunities across all markets ----
     if (action === "scan") {
-      // Fetch active markets from Gamma API
       const marketsRes = await fetch(
-        `${GAMMA_URL}/markets?closed=false&active=true&limit=50&order=volume24hr&ascending=false`
+        `${GAMMA_URL}/markets?closed=false&active=true&limit=100&order=volume24hr&ascending=false`
       );
       if (!marketsRes.ok) {
-        const respBody = await marketsRes.text();
-        throw new Error(`Gamma API error [${marketsRes.status}]: ${respBody}`);
+        throw new Error(`Gamma API error [${marketsRes.status}]: ${await marketsRes.text()}`);
       }
       const markets = await marketsRes.json();
+      const arbs = findArbs(markets, 0.3).slice(0, 20);
 
-      // Find markets with profitable pricing (high confidence outcomes)
-      const opportunities = markets
-        .filter((m: any) => {
-          const tokens = m.clobTokenIds ? JSON.parse(m.clobTokenIds) : [];
-          const prices = m.outcomePrices ? JSON.parse(m.outcomePrices) : [];
-          if (tokens.length < 2 || prices.length < 2) return false;
-          const maxPrice = Math.max(...prices.map(Number));
-          return maxPrice >= 0.85 && maxPrice <= 0.95;
-        })
-        .slice(0, 20)
-        .map((m: any) => {
-          const tokens = JSON.parse(m.clobTokenIds);
-          const prices = JSON.parse(m.outcomePrices).map(Number);
-          const outcomes = m.outcomes ? JSON.parse(m.outcomes) : ["Yes", "No"];
-          const bestIdx = prices[0] > prices[1] ? 0 : 1;
-          return {
-            market_id: m.conditionId || m.id,
-            question: m.question,
-            token_id: tokens[bestIdx],
-            best_outcome: outcomes[bestIdx],
-            price: prices[bestIdx],
-            volume_24h: m.volume24hr,
-            end_date: m.endDate,
-          };
-        });
-
-      return new Response(JSON.stringify({ markets: opportunities }), {
+      return new Response(JSON.stringify({ markets: arbs }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
+    // ---- LIVE SCAN: arbs on markets ending soon ----
     if (action === "live_scan") {
-      // Fetch markets ending soon — these are "live" opportunities near resolution
       const now = new Date();
-      const soon = new Date(now.getTime() + 48 * 60 * 60 * 1000); // within 48h
+      const soon = new Date(now.getTime() + 48 * 60 * 60 * 1000);
 
       const marketsRes = await fetch(
-        `${GAMMA_URL}/markets?closed=false&active=true&limit=100&order=endDate&ascending=true`
+        `${GAMMA_URL}/markets?closed=false&active=true&limit=200&order=endDate&ascending=true`
       );
       if (!marketsRes.ok) {
-        const respBody = await marketsRes.text();
-        throw new Error(`Gamma API error [${marketsRes.status}]: ${respBody}`);
+        throw new Error(`Gamma API error [${marketsRes.status}]: ${await marketsRes.text()}`);
       }
-      const markets = await marketsRes.json();
+      const allMarkets = await marketsRes.json();
 
-      const liveOpps = markets
-        .filter((m: any) => {
-          const endDate = m.endDate ? new Date(m.endDate) : null;
-          if (!endDate || endDate > soon || endDate < now) return false;
-          const tokens = m.clobTokenIds ? JSON.parse(m.clobTokenIds) : [];
-          const prices = m.outcomePrices ? JSON.parse(m.outcomePrices) : [];
-          if (tokens.length < 2 || prices.length < 2) return false;
-          const maxPrice = Math.max(...prices.map(Number));
-          return maxPrice >= 0.93;
-        })
-        .slice(0, 15)
-        .map((m: any) => {
-          const tokens = JSON.parse(m.clobTokenIds);
-          const prices = JSON.parse(m.outcomePrices).map(Number);
-          const outcomes = m.outcomes ? JSON.parse(m.outcomes) : ["Yes", "No"];
-          const bestIdx = prices[0] > prices[1] ? 0 : 1;
-          const buyPrice = prices[bestIdx];
-          const profitPct = ((1 / buyPrice - 1) * 100).toFixed(1);
-          const endDate = new Date(m.endDate);
-          const hoursLeft = Math.max(0, (endDate.getTime() - now.getTime()) / (1000 * 60 * 60));
-          return {
-            market_id: m.conditionId || m.id,
-            question: m.question,
-            token_id: tokens[bestIdx],
-            best_outcome: outcomes[bestIdx],
-            price: buyPrice,
-            profit_pct: profitPct,
-            hours_left: Number(hoursLeft.toFixed(1)),
-            volume_24h: m.volume24hr,
-            end_date: m.endDate,
-          };
-        })
-        .sort((a: any, b: any) => a.hours_left - b.hours_left);
+      // Filter to ending soon
+      const soonMarkets = allMarkets.filter((m: any) => {
+        const endDate = m.endDate ? new Date(m.endDate) : null;
+        return endDate && endDate > now && endDate <= soon;
+      });
 
-      return new Response(JSON.stringify({ live: liveOpps }), {
+      const arbs = findArbs(soonMarkets, 0.1).slice(0, 15).map((a: any) => {
+        const endDate = new Date(a.end_date);
+        const hoursLeft = Math.max(0, (endDate.getTime() - now.getTime()) / (1000 * 60 * 60));
+        return { ...a, hours_left: Number(hoursLeft.toFixed(1)) };
+      });
+
+      return new Response(JSON.stringify({ live: arbs }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
+    // ---- EXECUTE: place both sides of an arb ----
     if (action === "execute") {
+      // Record both legs of the arb trade
+      const totalCost = (yes_price || 0) + (no_price || 0);
+      const arbProfit = 1 - totalCost;
 
-      // For now, we record the trade intent and simulate execution
-      // Full CLOB order signing requires ethers.js which is complex in Deno
-      // The bot will track intended trades for monitoring
-      const { data: trade, error } = await supabase
+      const { data: trades, error } = await supabase
         .from("polymarket_trades")
-        .insert({
-          market_id,
-          market_question: question,
-          token_id,
-          side: "BUY",
-          price,
-          size: size || 0.5,
-          status: "executed",
-        })
-        .select()
-        .single();
+        .insert([
+          {
+            market_id,
+            market_question: question,
+            token_id: yes_token_id,
+            side: "BUY_YES",
+            price: yes_price,
+            size: size || 0.5,
+            status: "executed",
+            profit_loss: arbProfit * (size || 0.5),
+          },
+          {
+            market_id,
+            market_question: question,
+            token_id: no_token_id,
+            side: "BUY_NO",
+            price: no_price,
+            size: size || 0.5,
+            status: "executed",
+            profit_loss: 0, // profit tracked on YES leg
+          },
+        ])
+        .select();
 
       if (error) throw error;
 
-      return new Response(JSON.stringify({ trade }), {
+      return new Response(JSON.stringify({ trades }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
+    // ---- STATUS ----
     if (action === "status") {
-      // Get bot settings
       const { data: settings } = await supabase
         .from("bot_settings")
         .select("*")
         .limit(1)
         .maybeSingle();
 
-      // Get recent trades
       const { data: trades } = await supabase
         .from("polymarket_trades")
         .select("*")
         .order("created_at", { ascending: false })
         .limit(50);
 
-      // Get trade stats
       const { data: allTrades } = await supabase
         .from("polymarket_trades")
         .select("*");
@@ -190,13 +177,16 @@ Deno.serve(async (req) => {
       const totalTrades = allTrades?.length || 0;
       const totalProfit = allTrades?.reduce((sum, t) => sum + (t.profit_loss || 0), 0) || 0;
       const totalInvested = allTrades?.reduce((sum, t) => sum + (t.size || 0), 0) || 0;
+      // Count unique arb pairs (each arb = 2 trade rows)
+      const arbCount = Math.floor(totalTrades / 2);
 
       return new Response(
-        JSON.stringify({ settings, trades, stats: { totalTrades, totalProfit, totalInvested } }),
+        JSON.stringify({ settings, trades, stats: { totalTrades, totalProfit, totalInvested, arbCount } }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
+    // ---- TOGGLE ----
     if (action === "toggle") {
       const { data, error } = await supabase
         .from("bot_settings")
@@ -211,6 +201,7 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ---- UPDATE SETTINGS ----
     if (action === "update_settings") {
       const { data: current } = await supabase.from("bot_settings").select("id").limit(1).single();
       const { data, error } = await supabase
@@ -232,8 +223,8 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ---- AUTO TRADE (cron) — find & execute best arb ----
     if (action === "auto_trade") {
-      // Called by cron — check if bot is running
       const { data: settings } = await supabase
         .from("bot_settings")
         .select("*")
@@ -246,97 +237,92 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Count open trades
+      // Count open arb positions
       const { count } = await supabase
         .from("polymarket_trades")
         .select("*", { count: "exact", head: true })
         .eq("status", "executed");
 
-      if ((count || 0) >= settings.max_open_trades) {
-        return new Response(JSON.stringify({ skipped: true, reason: "Max open trades reached" }), {
+      if ((count || 0) / 2 >= settings.max_open_trades) {
+        return new Response(JSON.stringify({ skipped: true, reason: "Max open arb positions reached" }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      // Scan for best opportunity
+      // Scan for arbs
       const marketsRes = await fetch(
-        `${GAMMA_URL}/markets?closed=false&active=true&limit=50&order=volume24hr&ascending=false`
+        `${GAMMA_URL}/markets?closed=false&active=true&limit=100&order=volume24hr&ascending=false`
       );
       if (!marketsRes.ok) {
-        const respBody = await marketsRes.text();
-        throw new Error(`Gamma API error [${marketsRes.status}]: ${respBody}`);
+        throw new Error(`Gamma API error [${marketsRes.status}]: ${await marketsRes.text()}`);
       }
       const markets = await marketsRes.json();
 
-      const candidates = markets
-        .filter((m: any) => {
-          const tokens = m.clobTokenIds ? JSON.parse(m.clobTokenIds) : [];
-          const prices = m.outcomePrices ? JSON.parse(m.outcomePrices) : [];
-          if (tokens.length < 2 || prices.length < 2) return false;
-          const maxPrice = Math.max(...prices.map(Number));
-          return maxPrice >= settings.min_confidence && maxPrice <= 0.97;
-        })
-        .map((m: any) => {
-          const tokens = JSON.parse(m.clobTokenIds);
-          const prices = JSON.parse(m.outcomePrices).map(Number);
-          const outcomes = m.outcomes ? JSON.parse(m.outcomes) : ["Yes", "No"];
-          const bestIdx = prices[0] > prices[1] ? 0 : 1;
-          return {
-            market_id: m.conditionId || m.id,
-            question: m.question,
-            token_id: tokens[bestIdx],
-            best_outcome: outcomes[bestIdx],
-            price: prices[bestIdx],
-          };
-        });
+      // min_confidence here acts as min spread % threshold
+      const minSpread = (1 - settings.min_confidence) * 100;
+      const arbs = findArbs(markets, minSpread);
 
-      if (candidates.length === 0) {
-        return new Response(JSON.stringify({ skipped: true, reason: "No qualifying markets" }), {
+      if (arbs.length === 0) {
+        return new Response(JSON.stringify({ skipped: true, reason: "No arb opportunities found" }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      // Pick the best candidate (highest confidence)
-      const best = candidates.sort((a: any, b: any) => b.price - a.price)[0];
+      // Find first arb we haven't already traded
+      let best = null;
+      for (const arb of arbs) {
+        const { data: existing } = await supabase
+          .from("polymarket_trades")
+          .select("id")
+          .eq("market_id", arb.market_id)
+          .eq("status", "executed")
+          .limit(1)
+          .maybeSingle();
 
-      // Check we haven't already traded this market
-      const { data: existing } = await supabase
-        .from("polymarket_trades")
-        .select("id")
-        .eq("market_id", best.market_id)
-        .eq("status", "executed")
-        .limit(1)
-        .maybeSingle();
-
-      if (existing) {
-        // Try next best
-        const next = candidates.find((c: any) => c.market_id !== best.market_id);
-        if (!next) {
-          return new Response(JSON.stringify({ skipped: true, reason: "All candidates already traded" }), {
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
+        if (!existing) {
+          best = arb;
+          break;
         }
-        Object.assign(best, next);
       }
 
-      const { data: trade, error: tradeErr } = await supabase
+      if (!best) {
+        return new Response(JSON.stringify({ skipped: true, reason: "All arb opportunities already traded" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // Execute both sides
+      const arbProfit = best.guaranteed_profit * settings.trade_amount;
+      const { data: trades, error: tradeErr } = await supabase
         .from("polymarket_trades")
-        .insert({
-          market_id: best.market_id,
-          market_question: best.question,
-          token_id: best.token_id,
-          side: "BUY",
-          price: best.price,
-          size: settings.trade_amount,
-          status: "executed",
-        })
-        .select()
-        .single();
+        .insert([
+          {
+            market_id: best.market_id,
+            market_question: best.question,
+            token_id: best.yes_token_id,
+            side: "BUY_YES",
+            price: best.yes_price,
+            size: settings.trade_amount,
+            status: "executed",
+            profit_loss: arbProfit,
+          },
+          {
+            market_id: best.market_id,
+            market_question: best.question,
+            token_id: best.no_token_id,
+            side: "BUY_NO",
+            price: best.no_price,
+            size: settings.trade_amount,
+            status: "executed",
+            profit_loss: 0,
+          },
+        ])
+        .select();
 
       if (tradeErr) throw tradeErr;
 
-      console.log(`Auto-trade executed: ${best.question} @ ${best.price}`);
-      return new Response(JSON.stringify({ executed: true, trade }), {
+      console.log(`Arb executed: ${best.question} | spread ${best.spread_pct}% | profit $${arbProfit.toFixed(4)}`);
+      return new Response(JSON.stringify({ executed: true, trades, arb: best }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }

@@ -16,15 +16,15 @@ export function BotHeader({ isRunning, totalTrades }: BotHeaderProps) {
         <div className={`h-3 w-3 rounded-full ${isRunning ? "bg-profit pulse-glow" : "bg-muted-foreground"}`} />
         <h1 className="text-xl font-bold tracking-tight">
           <Zap className="mr-1 inline h-5 w-5 text-accent" />
-          POLYBOT
+          POLYARB
         </h1>
-        <span className="text-xs text-muted-foreground">v1.0</span>
+        <span className="text-xs text-muted-foreground">Arbitrage Bot</span>
       </div>
 
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Activity className="h-4 w-4" />
-          <span>{totalTrades} trades</span>
+          <span>{Math.floor(totalTrades / 2)} arbs</span>
         </div>
         <Button
           size="sm"

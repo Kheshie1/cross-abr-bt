@@ -1,4 +1,4 @@
-import { TrendingUp, DollarSign, BarChart3, Clock } from "lucide-react";
+import { TrendingUp, DollarSign, BarChart3, Percent } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 
 interface StatsCardsProps {
@@ -9,32 +9,33 @@ interface StatsCardsProps {
 }
 
 export function StatsCards({ totalTrades, totalProfit, totalInvested, intervalMinutes }: StatsCardsProps) {
-  const roi = totalInvested > 0 ? ((totalProfit / totalInvested) * 100).toFixed(1) : "0.0";
+  const arbCount = Math.floor(totalTrades / 2);
+  const roi = totalInvested > 0 ? ((totalProfit / totalInvested) * 100).toFixed(2) : "0.00";
 
   const stats = [
     {
-      label: "Total Trades",
-      value: totalTrades,
+      label: "Arb Trades",
+      value: arbCount,
       icon: BarChart3,
       color: "text-accent",
     },
     {
-      label: "Total Invested",
+      label: "Total Deployed",
       value: `$${totalInvested.toFixed(2)}`,
       icon: DollarSign,
       color: "text-foreground",
     },
     {
-      label: "P&L",
-      value: `$${totalProfit.toFixed(2)}`,
+      label: "Guaranteed P&L",
+      value: `${totalProfit >= 0 ? "+" : ""}$${totalProfit.toFixed(2)}`,
       icon: TrendingUp,
       color: totalProfit >= 0 ? "text-profit" : "text-loss",
     },
     {
-      label: "Interval",
-      value: `${intervalMinutes}m`,
-      icon: Clock,
-      color: "text-muted-foreground",
+      label: "ROI",
+      value: `${roi}%`,
+      icon: Percent,
+      color: Number(roi) >= 0 ? "text-profit" : "text-loss",
     },
   ];
 

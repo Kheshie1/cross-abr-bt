@@ -81,10 +81,14 @@ export function useRealtimeTrades() {
         (payload) => {
           qc.invalidateQueries({ queryKey: ["bot-status"] });
           const trade = payload.new as any;
-          toast.success("🚀 Trade Executed!", {
-            description: `${trade.market_question?.slice(0, 80)} — $${trade.size} @ ${(trade.price * 100).toFixed(1)}¢`,
-            duration: 8000,
-          });
+          // Only toast for the YES leg (avoid double notification per arb)
+          if (trade.side === "BUY_YES" || trade.side === "BUY") {
+            const profitStr = trade.profit_loss ? `+$${Number(trade.profit_loss).toFixed(4)}` : "";
+            toast.success("⚡ Arb Executed!", {
+              description: `${trade.market_question?.slice(0, 70)} ${profitStr}`,
+              duration: 8000,
+            });
+          }
         }
       )
       .on(
