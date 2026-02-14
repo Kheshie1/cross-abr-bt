@@ -9,29 +9,92 @@ const corsHeaders = {
 const GAMMA_URL = "https://gamma-api.polymarket.com";
 const KALSHI_URL = "https://api.elections.kalshi.com/trade-api/v2";
 
-// Normalize a question string for fuzzy matching
+// ──────────── MATCHING ENGINE ────────────
+
 function normalize(s: string): string {
   return s
     .toLowerCase()
-    .replace(/[^a-z0-9 ]/g, "")
+    .replace(/['']/g, "")
+    .replace(/[^a-z0-9 ]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-// Extract key tokens for matching (remove stop words)
-function keyTokens(s: string): string[] {
-  const stop = new Set(["will", "the", "a", "an", "in", "on", "at", "to", "of", "be", "is", "for", "by", "it", "do", "does", "has", "have", "or", "and"]);
-  return normalize(s).split(" ").filter((w) => w.length > 2 && !stop.has(w));
+// Generate bigrams for fuzzy matching (more robust than single tokens)
+function bigrams(s: string): Set<string> {
+  const norm = normalize(s);
+  const set = new Set<string>();
+  for (let i = 0; i < norm.length - 1; i++) {
+    set.add(norm.slice(i, i + 2));
+  }
+  return set;
 }
 
-// Score similarity between two question strings (0-1)
-function similarity(a: string, b: string): number {
-  const tokensA = keyTokens(a);
-  const tokensB = new Set(keyTokens(b));
-  if (tokensA.length === 0) return 0;
-  const matches = tokensA.filter((t) => tokensB.has(t)).length;
-  return matches / Math.max(tokensA.length, tokensB.size);
+// Dice coefficient — robust fuzzy similarity (0-1)
+function diceCoefficient(a: string, b: string): number {
+  const biA = bigrams(a);
+  const biB = bigrams(b);
+  if (biA.size === 0 || biB.size === 0) return 0;
+  let intersection = 0;
+  for (const bi of biA) {
+    if (biB.has(bi)) intersection++;
+  }
+  return (2 * intersection) / (biA.size + biB.size);
 }
+
+// Extract key entities (proper nouns, numbers, named things)
+function extractEntities(s: string): string[] {
+  const norm = normalize(s);
+  const stop = new Set([
+    "will", "the", "does", "what", "when", "where", "who", "which",
+    "that", "this", "with", "from", "into", "over", "under", "about",
+    "before", "after", "between", "during", "above", "below", "more",
+    "than", "next", "last", "first", "second", "third", "most",
+    "each", "every", "other", "another", "some", "many", "much",
+    "very", "just", "also", "only", "even", "still", "already",
+    "been", "being", "have", "having", "here", "there",
+    "win", "won", "lose", "lost", "beat", "defeated", "game",
+    "match", "price", "market", "high", "low", "temperature", "temp",
+    "minimum", "maximum", "day", "week", "month", "year", "today",
+    "tomorrow", "yesterday", "points", "scored", "team",
+    "new", "city", "state", "north", "south", "east", "west",
+    "united", "san", "los", "las", "cup", "open", "final", "finals",
+    "2026", "2025", "2027", "feb", "mar", "apr", "may", "jun",
+    "jul", "aug", "sep", "oct", "nov", "dec", "january", "february",
+    "march", "april", "june", "july", "august", "september", "october",
+    "november", "december", "sunday", "monday", "tuesday", "wednesday",
+    "thursday", "friday", "saturday",
+  ]);
+  return norm
+    .split(" ")
+    .filter((w) => w.length > 2 && !stop.has(w));
+}
+
+// Match quality assessment — strict entity-based matching
+function matchMarkets(polyQ: string, kalshiQ: string, polyEnts: string[], kalshiEnts: Set<string>): number {
+  // Count entity matches
+  const entityMatches = polyEnts.filter((e) => kalshiEnts.has(e));
+  const matchCount = entityMatches.length;
+
+  // REQUIRE at least 2 matching entities for any match
+  if (matchCount < 2) return 0;
+
+  // Entity overlap score (Jaccard-like)
+  const entityScore = matchCount / Math.max(polyEnts.length, kalshiEnts.size);
+
+  // Bigram dice for additional confirmation
+  const dice = diceCoefficient(polyQ, kalshiQ);
+
+  // High confidence: 70% entity, 30% bigram
+  const combined = entityScore * 0.7 + dice * 0.3;
+
+  // Bonus if many entities match (3+ = strong signal)
+  const bonus = matchCount >= 3 ? 0.1 : 0;
+
+  return Math.min(1, combined + bonus);
+}
+
+// ──────────── MARKET DATA ────────────
 
 interface MarketData {
   id: string;
@@ -44,10 +107,12 @@ interface MarketData {
   token_id_yes?: string;
   token_id_no?: string;
   ticker?: string;
+  category?: string;
 }
 
-// Fetch Polymarket markets via Gamma API
-async function fetchPolymarkets(limit = 100): Promise<MarketData[]> {
+// ──────────── POLYMARKET FETCH ────────────
+
+async function fetchPolymarkets(limit = 200): Promise<MarketData[]> {
   const res = await fetch(
     `${GAMMA_URL}/markets?closed=false&active=true&limit=${limit}&order=volume24hr&ascending=false`
   );
@@ -71,51 +136,86 @@ async function fetchPolymarkets(limit = 100): Promise<MarketData[]> {
         end_date: m.endDate,
         token_id_yes: tokens[0],
         token_id_no: tokens[1],
+        category: m.groupSlug || "",
       };
     });
 }
 
-// Fetch Kalshi markets (public, no auth needed for reading)
-async function fetchKalshiMarkets(limit = 200): Promise<MarketData[]> {
-  const res = await fetch(
-    `${KALSHI_URL}/markets?limit=${limit}&status=open`
-  );
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    console.error(`Kalshi API error [${res.status}]: ${errText.slice(0, 500)}`);
-    throw new Error(`Kalshi API error [${res.status}]`);
-  }
-  const data = await res.json();
-  const markets = data.markets || [];
-  console.log(`Kalshi raw markets: ${markets.length}, sample keys: ${markets[0] ? Object.keys(markets[0]).join(",") : "none"}`);
-  if (markets[0]) {
-    console.log(`Sample Kalshi market: ${JSON.stringify(markets[0]).slice(0, 500)}`);
-  }
+// ──────────── KALSHI FETCH (multi-page, MVE excluded) ────────────
 
-  return markets
-    .map((m: any) => {
-      // Kalshi uses various price fields — try them all
-      const yesPrice = (m.yes_ask ?? m.yes_bid ?? m.last_price ?? m.response_price_units?.yes_ask ?? 0);
-      const noPrice = (m.no_ask ?? m.no_bid ?? (yesPrice > 0 ? (100 - yesPrice) : 0));
-      return {
-        id: m.ticker || m.market_id || "",
-        question: m.title || m.subtitle || m.yes_sub_title || "",
-        yes_price: yesPrice / 100, // Kalshi prices are in cents
+async function fetchKalshiMarkets(maxPages = 3): Promise<MarketData[]> {
+  const allMarkets: MarketData[] = [];
+  let cursor: string | undefined;
+
+  for (let page = 0; page < maxPages; page++) {
+    const params = new URLSearchParams({
+      limit: "1000",
+      status: "open",
+      mve_filter: "exclude", // Only single binary markets
+    });
+    if (cursor) params.set("cursor", cursor);
+
+    const res = await fetch(`${KALSHI_URL}/markets?${params}`);
+    if (!res.ok) {
+      console.error(`Kalshi API error [${res.status}]`);
+      break;
+    }
+    const data = await res.json();
+    const markets = data.markets || [];
+    cursor = data.cursor;
+    console.log(`Kalshi page ${page}: ${markets.length} markets (cursor: ${cursor ? "yes" : "no"})`);
+
+    for (const m of markets) {
+      // ─── SKIP MVE / parlay markets (multi-leg combos) ───
+      if (m.mve_collection_ticker) continue;
+      if (m.market_type === "multi_variate") continue;
+      const title = m.title || "";
+      // MVE titles look like "yes Team1,yes Team2,no Team3"
+      if (/^(yes|no) .+,(yes|no) /i.test(title)) continue;
+
+      // ─── Use subtitle as primary (cleaner question format) ───
+      const question = m.subtitle || m.title || m.yes_sub_title || "";
+      if (question.length < 5) continue;
+
+      // ─── Price: use midpoint of bid/ask for accuracy ───
+      const yesBid = m.yes_bid ?? 0;
+      const yesAsk = m.yes_ask ?? 0;
+      const noBid = m.no_bid ?? 0;
+      const noAsk = m.no_ask ?? 0;
+
+      // Use ask for buying (worst case for us = conservative arb)
+      const yesPrice = yesAsk > 0 ? yesAsk : (m.last_price ?? 0);
+      const noPrice = noAsk > 0 ? noAsk : (100 - (m.last_price ?? 50));
+
+      if (yesPrice <= 0 || noPrice <= 0) continue;
+      if (yesPrice >= 99 || noPrice >= 99) continue; // Skip illiquid extremes
+
+      allMarkets.push({
+        id: m.ticker || "",
+        question,
+        yes_price: yesPrice / 100,
         no_price: noPrice / 100,
         platform: "kalshi" as const,
         volume: m.volume_24h || m.volume || 0,
         end_date: m.close_time || m.expiration_time,
         ticker: m.ticker,
-      };
-    })
-    .filter((m: MarketData) => m.yes_price > 0 && m.no_price > 0 && m.question.length > 0);
+        category: m.event_ticker || "",
+      });
+    }
+
+    if (!cursor || markets.length < 1000) break;
+  }
+
+  console.log(`Kalshi: ${allMarkets.length} single-binary markets after filtering`);
+  return allMarkets;
 }
+
+// ──────────── CROSS-PLATFORM ARB FINDER ────────────
 
 interface CrossPlatformArb {
   poly_market: MarketData;
   kalshi_market: MarketData;
   match_score: number;
-  // Best arb: buy YES on cheaper platform, buy NO on other
   best_strategy: string;
   buy_yes_platform: string;
   buy_yes_price: number;
@@ -130,16 +230,25 @@ interface CrossPlatformArb {
 function findCrossPlatformArbs(
   polymarkets: MarketData[],
   kalshiMarkets: MarketData[],
-  minMatchScore = 0.5
+  minMatchScore = 0.35
 ): CrossPlatformArb[] {
   const arbs: CrossPlatformArb[] = [];
+
+  // Pre-compute Kalshi entities
+  const kalshiIndexed = kalshiMarkets.map((k) => ({
+    market: k,
+    entities: new Set(extractEntities(k.question)),
+  }));
 
   for (const poly of polymarkets) {
     let bestMatch: MarketData | null = null;
     let bestScore = 0;
 
-    for (const kalshi of kalshiMarkets) {
-      const score = similarity(poly.question, kalshi.question);
+    const polyEntities = extractEntities(poly.question);
+    if (polyEntities.length < 2) continue; // Skip questions too vague to match
+
+    for (const { market: kalshi, entities: kalshiEnts } of kalshiIndexed) {
+      const score = matchMarkets(poly.question, kalshi.question, polyEntities, kalshiEnts);
       if (score > bestScore && score >= minMatchScore) {
         bestScore = score;
         bestMatch = kalshi;
@@ -152,18 +261,23 @@ function findCrossPlatformArbs(
       // Strategy 2: Buy YES on Kalshi + Buy NO on Poly
       const cost2 = bestMatch.yes_price + poly.no_price;
 
-      let bestCost: number, strategy: string, buyYesPlatform: string, buyYesPrice: number, buyNoPlatform: string, buyNoPrice: number;
+      let bestCost: number,
+        strategy: string,
+        buyYesPlatform: string,
+        buyYesPrice: number,
+        buyNoPlatform: string,
+        buyNoPrice: number;
 
       if (cost1 <= cost2) {
         bestCost = cost1;
-        strategy = `Buy YES@Poly ($${poly.yes_price.toFixed(3)}) + Buy NO@Kalshi ($${bestMatch.no_price.toFixed(3)})`;
+        strategy = `YES@Poly $${poly.yes_price.toFixed(3)} + NO@Kalshi $${bestMatch.no_price.toFixed(3)}`;
         buyYesPlatform = "polymarket";
         buyYesPrice = poly.yes_price;
         buyNoPlatform = "kalshi";
         buyNoPrice = bestMatch.no_price;
       } else {
         bestCost = cost2;
-        strategy = `Buy YES@Kalshi ($${bestMatch.yes_price.toFixed(3)}) + Buy NO@Poly ($${poly.no_price.toFixed(3)})`;
+        strategy = `YES@Kalshi $${bestMatch.yes_price.toFixed(3)} + NO@Poly $${poly.no_price.toFixed(3)}`;
         buyYesPlatform = "kalshi";
         buyYesPrice = bestMatch.yes_price;
         buyNoPlatform = "polymarket";
@@ -175,7 +289,7 @@ function findCrossPlatformArbs(
       arbs.push({
         poly_market: poly,
         kalshi_market: bestMatch,
-        match_score: Number(bestScore.toFixed(2)),
+        match_score: Number(bestScore.toFixed(3)),
         best_strategy: strategy,
         buy_yes_platform: buyYesPlatform,
         buy_yes_price: buyYesPrice,
@@ -192,6 +306,8 @@ function findCrossPlatformArbs(
   return arbs.sort((a, b) => b.spread_pct - a.spread_pct);
 }
 
+// ──────────── MAIN HANDLER ────────────
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -203,22 +319,29 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { action, market_id, question, buy_yes_platform, buy_no_platform, buy_yes_price, buy_no_price, size, is_running, trade_amount, interval_minutes, min_confidence, max_open_trades } = body;
+    const {
+      action, market_id, question,
+      buy_yes_platform, buy_no_platform, buy_yes_price, buy_no_price,
+      size, is_running, trade_amount, interval_minutes, min_confidence, max_open_trades,
+    } = body;
 
-    // ---- SCAN: cross-platform arb scanner ----
+    // ──── SCAN ────
     if (action === "scan") {
       const [polymarkets, kalshiMarkets] = await Promise.all([
         fetchPolymarkets(200),
-        fetchKalshiMarkets(1000),
+        fetchKalshiMarkets(3), // up to 3000 Kalshi markets
       ]);
 
-      // Log sample titles for debugging matches
-      console.log(`Poly sample titles: ${polymarkets.slice(0, 3).map(m => m.question.slice(0, 60)).join(" | ")}`);
-      console.log(`Kalshi sample titles: ${kalshiMarkets.slice(0, 3).map(m => m.question.slice(0, 60)).join(" | ")}`);
+      console.log(`Scan: ${polymarkets.length} Poly × ${kalshiMarkets.length} Kalshi`);
 
-      const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.25).slice(0, 25);
+      // Show top matches by spread even if not arb-able
+      const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.3).slice(0, 30);
       const realArbCount = arbs.filter((a) => a.is_arb).length;
-      console.log(`Matches found: ${arbs.length}, real arbs: ${realArbCount}`);
+
+      console.log(`Results: ${arbs.length} matches, ${realArbCount} real arbs`);
+      if (arbs.length > 0) {
+        console.log(`Top match: "${arbs[0].poly_market.question}" ↔ "${arbs[0].kalshi_market.question}" (score: ${arbs[0].match_score}, spread: ${arbs[0].spread_pct}%)`);
+      }
 
       return new Response(
         JSON.stringify({
@@ -231,38 +354,50 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ---- LIVE SCAN: cross-platform arbs ending soon ----
+    // ──── LIVE SCAN ────
     if (action === "live_scan") {
       const now = new Date();
-      const soon = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+      const soon = new Date(now.getTime() + 72 * 60 * 60 * 1000); // 72h window
 
       const [polymarkets, kalshiMarkets] = await Promise.all([
         fetchPolymarkets(200),
-        fetchKalshiMarkets(200),
+        fetchKalshiMarkets(2),
       ]);
 
-      // Filter to markets ending soon
       const filterSoon = (m: MarketData) => {
         if (!m.end_date) return false;
         const end = new Date(m.end_date);
         return end > now && end <= soon;
       };
 
+      // Check both sides for ending-soon
       const soonPoly = polymarkets.filter(filterSoon);
-      const arbs = findCrossPlatformArbs(soonPoly, kalshiMarkets, 0.4)
-        .slice(0, 15)
-        .map((a) => {
-          const endDate = new Date(a.poly_market.end_date!);
-          const hoursLeft = Math.max(0, (endDate.getTime() - now.getTime()) / (1000 * 60 * 60));
-          return { ...a, hours_left: Number(hoursLeft.toFixed(1)) };
-        });
+      const soonKalshi = kalshiMarkets.filter(filterSoon);
 
-      return new Response(JSON.stringify({ live: arbs }), {
+      // Match soon-ending poly against all kalshi + all poly against soon-ending kalshi
+      const arbs1 = findCrossPlatformArbs(soonPoly, kalshiMarkets, 0.3);
+      const arbs2 = findCrossPlatformArbs(polymarkets, soonKalshi, 0.3);
+
+      // Deduplicate by poly market id
+      const seen = new Set<string>();
+      const combined: (CrossPlatformArb & { hours_left: number })[] = [];
+      for (const a of [...arbs1, ...arbs2]) {
+        if (seen.has(a.poly_market.id)) continue;
+        seen.add(a.poly_market.id);
+        const endStr = a.poly_market.end_date || a.kalshi_market.end_date;
+        const endDate = endStr ? new Date(endStr) : now;
+        const hoursLeft = Math.max(0, (endDate.getTime() - now.getTime()) / (1000 * 60 * 60));
+        combined.push({ ...a, hours_left: Number(hoursLeft.toFixed(1)) });
+      }
+
+      combined.sort((a, b) => b.spread_pct - a.spread_pct);
+
+      return new Response(JSON.stringify({ live: combined.slice(0, 20) }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // ---- EXECUTE: record a cross-platform arb trade ----
+    // ──── EXECUTE ────
     if (action === "execute") {
       const totalCost = (buy_yes_price || 0) + (buy_no_price || 0);
       const arbProfit = 1 - totalCost;
@@ -295,13 +430,12 @@ Deno.serve(async (req) => {
         .select();
 
       if (error) throw error;
-
       return new Response(JSON.stringify({ trades }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // ---- STATUS ----
+    // ──── STATUS ────
     if (action === "status") {
       const { data: settings } = await supabase
         .from("bot_settings")
@@ -330,7 +464,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ---- TOGGLE ----
+    // ──── TOGGLE ────
     if (action === "toggle") {
       const { data, error } = await supabase
         .from("bot_settings")
@@ -345,7 +479,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ---- UPDATE SETTINGS ----
+    // ──── UPDATE SETTINGS ────
     if (action === "update_settings") {
       const { data: current } = await supabase.from("bot_settings").select("id").limit(1).single();
       const { data, error } = await supabase
@@ -367,7 +501,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ---- AUTO TRADE (cron) ----
+    // ──── AUTO TRADE ────
     if (action === "auto_trade") {
       const { data: settings } = await supabase
         .from("bot_settings")
@@ -393,21 +527,20 @@ Deno.serve(async (req) => {
       }
 
       const [polymarkets, kalshiMarkets] = await Promise.all([
-        fetchPolymarkets(100),
-        fetchKalshiMarkets(200),
+        fetchPolymarkets(200),
+        fetchKalshiMarkets(3),
       ]);
 
       const minSpread = (1 - settings.min_confidence) * 100;
-      const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.5)
+      const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.4)
         .filter((a) => a.is_arb && a.spread_pct >= minSpread);
 
       if (arbs.length === 0) {
-        return new Response(JSON.stringify({ skipped: true, reason: "No cross-platform arb opportunities found" }), {
+        return new Response(JSON.stringify({ skipped: true, reason: "No cross-platform arbs found" }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      // Find first arb not already traded
       let best = null;
       for (const arb of arbs) {
         const { data: existing } = await supabase
@@ -459,7 +592,7 @@ Deno.serve(async (req) => {
 
       if (tradeErr) throw tradeErr;
 
-      console.log(`Cross-platform arb executed: ${best.poly_market.question} | spread ${best.spread_pct}% | profit $${arbProfit.toFixed(4)}`);
+      console.log(`Arb executed: ${best.poly_market.question} | ${best.spread_pct}% | +$${arbProfit.toFixed(4)}`);
       return new Response(JSON.stringify({ executed: true, trades, arb: best }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
