@@ -334,8 +334,8 @@ Deno.serve(async (req) => {
     // ──── SCAN ────
     if (action === "scan") {
       const [polymarkets, kalshiMarkets] = await Promise.all([
-        fetchPolymarkets(500),
-        fetchKalshiMarkets(5),
+        fetchPolymarkets(200),
+        fetchKalshiMarkets(3),
       ]);
 
       console.log(`Scan: ${polymarkets.length} Poly × ${kalshiMarkets.length} Kalshi`);
@@ -365,8 +365,8 @@ Deno.serve(async (req) => {
       const soon = new Date(now.getTime() + 72 * 60 * 60 * 1000); // 72h window
 
       const [polymarkets, kalshiMarkets] = await Promise.all([
-        fetchPolymarkets(500),
-        fetchKalshiMarkets(5),
+        fetchPolymarkets(200),
+        fetchKalshiMarkets(3),
       ]);
 
       const filterSoon = (m: MarketData) => {
