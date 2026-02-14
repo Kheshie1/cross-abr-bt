@@ -16,9 +16,9 @@ export function BotHeader({ isRunning, totalTrades }: BotHeaderProps) {
         <div className={`h-3 w-3 rounded-full ${isRunning ? "bg-profit pulse-glow" : "bg-muted-foreground"}`} />
         <h1 className="text-xl font-bold tracking-tight">
           <Zap className="mr-1 inline h-5 w-5 text-accent" />
-          POLYARB
+          CROSSARB
         </h1>
-        <span className="text-xs text-muted-foreground">Arbitrage Bot</span>
+        <span className="text-xs text-muted-foreground">Polymarket × Kalshi</span>
       </div>
 
       <div className="flex items-center gap-4">

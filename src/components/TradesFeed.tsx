@@ -20,8 +20,7 @@ interface TradesFeedProps {
 }
 
 export function TradesFeed({ trades }: TradesFeedProps) {
-  // Group trades by market_id to show arb pairs
-  const arbPairs: { key: string; question: string; yesPrice: number; noPrice: number; size: number; profit: number; time: string; status: string }[] = [];
+  const arbPairs: { key: string; question: string; yesLeg: string; noLeg: string; yesPrice: number; noPrice: number; size: number; profit: number; time: string; status: string }[] = [];
   const seen = new Set<string>();
 
   for (const t of trades) {
@@ -29,13 +28,18 @@ export function TradesFeed({ trades }: TradesFeedProps) {
     seen.add(t.market_id);
 
     const pair = trades.filter((tr) => tr.market_id === t.market_id);
-    const yesLeg = pair.find((p) => p.side === "BUY_YES");
-    const noLeg = pair.find((p) => p.side === "BUY_NO");
+    const yesLeg = pair.find((p) => p.side.startsWith("BUY_YES"));
+    const noLeg = pair.find((p) => p.side.startsWith("BUY_NO"));
 
     if (yesLeg && noLeg) {
+      // Extract platform from side like "BUY_YES@POLYMARKET"
+      const yesPlatform = yesLeg.side.includes("@") ? yesLeg.side.split("@")[1] : "?";
+      const noPlatform = noLeg.side.includes("@") ? noLeg.side.split("@")[1] : "?";
       arbPairs.push({
         key: t.market_id,
         question: t.market_question,
+        yesLeg: yesPlatform,
+        noLeg: noPlatform,
         yesPrice: yesLeg.price,
         noPrice: noLeg.price,
         size: yesLeg.size,
@@ -44,10 +48,11 @@ export function TradesFeed({ trades }: TradesFeedProps) {
         status: yesLeg.status,
       });
     } else {
-      // Legacy single trades
       arbPairs.push({
         key: t.id,
         question: t.market_question,
+        yesLeg: "?",
+        noLeg: "?",
         yesPrice: t.price,
         noPrice: 0,
         size: t.size,
@@ -63,12 +68,12 @@ export function TradesFeed({ trades }: TradesFeedProps) {
       <CardHeader className="pb-3">
         <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
           <ArrowLeftRight className="h-4 w-4" />
-          RECENT ARB TRADES
+          RECENT CROSS-PLATFORM TRADES
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 max-h-[400px] overflow-y-auto">
         {arbPairs.length === 0 ? (
-          <p className="text-sm text-muted-foreground text-center py-8">No arb trades yet. Start the bot to begin.</p>
+          <p className="text-sm text-muted-foreground text-center py-8">No cross-platform trades yet.</p>
         ) : (
           arbPairs.map((a) => (
             <div
@@ -81,7 +86,7 @@ export function TradesFeed({ trades }: TradesFeedProps) {
                   {a.noPrice > 0 ? (
                     <>
                       <Badge variant="outline" className="text-xs">
-                        Y ${a.yesPrice.toFixed(3)} + N ${a.noPrice.toFixed(3)}
+                        Y@{a.yesLeg} ${a.yesPrice.toFixed(3)} + N@{a.noLeg} ${a.noPrice.toFixed(3)}
                       </Badge>
                       <Badge className="text-xs bg-profit/15 text-profit border-profit/30">
                         +${a.profit.toFixed(4)}
