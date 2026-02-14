@@ -9,7 +9,8 @@ const corsHeaders = {
 const GAMMA_URL = "https://gamma-api.polymarket.com";
 
 // Extract arb opportunities from a list of Gamma markets
-function findArbs(markets: any[], minSpreadPct = 0.5) {
+// showAll = true returns ALL markets with their spread (for dashboard visibility)
+function findArbs(markets: any[], minSpreadPct = 0.5, showAll = false) {
   return markets
     .filter((m: any) => {
       const tokens = m.clobTokenIds ? JSON.parse(m.clobTokenIds) : [];
@@ -19,6 +20,7 @@ function findArbs(markets: any[], minSpreadPct = 0.5) {
       const noPrice = Number(prices[1]);
       if (yesPrice <= 0 || noPrice <= 0) return false;
       const totalCost = yesPrice + noPrice;
+      if (showAll) return true; // Show all for monitoring
       // Arb exists when total cost < 1 (buy both sides, one resolves to $1)
       return totalCost < (1 - minSpreadPct / 100);
     })
@@ -41,6 +43,7 @@ function findArbs(markets: any[], minSpreadPct = 0.5) {
         volume_24h: m.volume24hr || 0,
         end_date: m.endDate,
         outcomes,
+        is_arb: totalCost < 1, // true = actual arb opportunity
       };
     })
     .sort((a: any, b: any) => b.spread_pct - a.spread_pct);
@@ -80,9 +83,11 @@ Deno.serve(async (req) => {
         throw new Error(`Gamma API error [${marketsRes.status}]: ${await marketsRes.text()}`);
       }
       const markets = await marketsRes.json();
-      const arbs = findArbs(markets, 0.3).slice(0, 20);
+      // Show all markets sorted by spread (best first), mark actual arbs
+      const arbs = findArbs(markets, 0, true).slice(0, 20);
+      const realArbCount = arbs.filter((a: any) => a.is_arb).length;
 
-      return new Response(JSON.stringify({ markets: arbs }), {
+      return new Response(JSON.stringify({ markets: arbs, real_arb_count: realArbCount }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -106,7 +111,7 @@ Deno.serve(async (req) => {
         return endDate && endDate > now && endDate <= soon;
       });
 
-      const arbs = findArbs(soonMarkets, 0.1).slice(0, 15).map((a: any) => {
+      const arbs = findArbs(soonMarkets, 0, true).slice(0, 15).map((a: any) => {
         const endDate = new Date(a.end_date);
         const hoursLeft = Math.max(0, (endDate.getTime() - now.getTime()) / (1000 * 60 * 60));
         return { ...a, hours_left: Number(hoursLeft.toFixed(1)) };
