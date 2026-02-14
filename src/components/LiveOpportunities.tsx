@@ -36,10 +36,10 @@ export function LiveOpportunities() {
                 <p className="text-sm font-medium truncate">{m.question}</p>
                 <div className="mt-1.5 flex flex-wrap items-center gap-2">
                   <Badge variant="outline" className="text-xs bg-profit/10 text-profit border-profit/30">
-                    Yes ${m.yes_price.toFixed(3)} + No ${m.no_price.toFixed(3)}
+                    Yes ${(m.yes_price ?? 0).toFixed(3)} + No ${(m.no_price ?? 0).toFixed(3)}
                   </Badge>
                   <Badge className="bg-accent/15 text-accent border-accent/30 text-xs font-bold">
-                    +{m.spread_pct}% guaranteed
+                    +{m.spread_pct ?? 0}% guaranteed
                   </Badge>
                   <span className="flex items-center gap-1 text-xs text-muted-foreground">
                     <Clock className="h-3 w-3" />
