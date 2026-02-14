@@ -4,6 +4,7 @@ import { TradesFeed } from "@/components/TradesFeed";
 import { MarketScanner } from "@/components/MarketScanner";
 import { LiveOpportunities } from "@/components/LiveOpportunities";
 import { BotSettings } from "@/components/BotSettings";
+import { PnLChart } from "@/components/PnLChart";
 import { useBotStatus, useRealtimeTrades } from "@/hooks/useBot";
 import { Loader2 } from "lucide-react";
 
@@ -36,6 +37,7 @@ const Index = () => {
           totalInvested={stats.totalInvested}
           intervalMinutes={settings?.interval_minutes || 4.47}
         />
+        <PnLChart trades={trades} />
         <LiveOpportunities />
         <div className="grid gap-4 lg:grid-cols-2">
           <MarketScanner />
