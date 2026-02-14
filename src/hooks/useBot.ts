@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useEffect, useRef } from "react";
+import { toast } from "sonner";
 
 const FUNCTION_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/polymarket-trade`;
 
@@ -76,7 +77,19 @@ export function useRealtimeTrades() {
       .channel("trades-realtime")
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "polymarket_trades" },
+        { event: "INSERT", schema: "public", table: "polymarket_trades" },
+        (payload) => {
+          qc.invalidateQueries({ queryKey: ["bot-status"] });
+          const trade = payload.new as any;
+          toast.success("🚀 Trade Executed!", {
+            description: `${trade.market_question?.slice(0, 80)} — $${trade.size} @ ${(trade.price * 100).toFixed(1)}¢`,
+            duration: 8000,
+          });
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "polymarket_trades" },
         () => {
           qc.invalidateQueries({ queryKey: ["bot-status"] });
         }
