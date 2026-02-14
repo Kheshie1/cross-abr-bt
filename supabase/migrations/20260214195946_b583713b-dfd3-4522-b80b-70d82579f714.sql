@@ -1,0 +1,1 @@
+ALTER TABLE public.polymarket_trades DROP CONSTRAINT IF EXISTS polymarket_trades_side_check;
