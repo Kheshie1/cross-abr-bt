@@ -427,34 +427,72 @@ Deno.serve(async (req) => {
     // ──── BALANCE ────
     if (action === "balance") {
       const balances: Record<string, any> = { polymarket: null, kalshi: null };
+      let positions: any[] = [];
 
-      // Polymarket balance — derive fresh L2 creds from private key
-      try {
-        const privateKey = Deno.env.get("POLYMARKET_PRIVATE_KEY");
+      const privateKey = Deno.env.get("POLYMARKET_PRIVATE_KEY");
 
-        if (privateKey) {
-          const data = await deriveAndFetchBalance(privateKey);
+      if (privateKey) {
+        const wallet = new Wallet(privateKey);
+        const address = wallet.address;
+
+        // Fetch cash balance + positions in parallel
+        const [balResult, posResult] = await Promise.allSettled([
+          deriveAndFetchBalance(privateKey),
+          fetch(`https://data-api.polymarket.com/positions?user=${address}`).then(r => r.ok ? r.json() : []),
+        ]);
+
+        // Cash balance
+        if (balResult.status === "fulfilled") {
+          const data = balResult.value;
           balances.polymarket = {
             balance: Number(data.balance || 0) / 1e6,
             allowance: Number(data.allowance || 0) / 1e6,
           };
         } else {
-          balances.polymarket = { error: "Private key not configured" };
+          console.error("Balance fetch failed:", balResult.reason);
+          balances.polymarket = { balance: 0, allowance: 0, error: "Could not fetch cash balance" };
         }
-      } catch (e) {
-        console.error("Polymarket balance failed:", e);
-        balances.polymarket = { error: e instanceof Error ? e.message : "Unknown error" };
+
+        // Positions (public endpoint, no auth needed)
+        if (posResult.status === "fulfilled") {
+          const rawPositions = posResult.value || [];
+          let portfolioValue = 0;
+          positions = rawPositions
+            .filter((p: any) => Number(p.size || 0) > 0)
+            .map((p: any) => {
+              const size = Number(p.size || 0);
+              const currentPrice = Number(p.curPrice || p.price || 0);
+              const value = size * currentPrice;
+              portfolioValue += value;
+              return {
+                market: p.title || p.market_slug || p.asset || "Unknown",
+                outcome: p.outcome || (p.side === "YES" ? "Yes" : "No"),
+                size,
+                avgPrice: Number(p.avgPrice || p.price || 0),
+                currentPrice,
+                value: Number(value.toFixed(2)),
+                pnl: Number(((currentPrice - Number(p.avgPrice || p.price || 0)) * size).toFixed(2)),
+              };
+            })
+            .sort((a: any, b: any) => b.value - a.value)
+            .slice(0, 20);
+
+          if (balances.polymarket) {
+            balances.polymarket.portfolioValue = Number(portfolioValue.toFixed(2));
+            balances.polymarket.positionCount = rawPositions.filter((p: any) => Number(p.size || 0) > 0).length;
+          }
+        }
+      } else {
+        balances.polymarket = { error: "Private key not configured" };
       }
 
-      // Kalshi balance — requires RSA-PSS key which we may not have
       balances.kalshi = { error: "Kalshi API key not configured" };
 
-      // Also include DB stats
       const { data: allTrades } = await supabase.from("polymarket_trades").select("size, profit_loss");
       const totalInvested = allTrades?.reduce((s, t) => s + (t.size || 0), 0) || 0;
       const totalProfit = allTrades?.reduce((s, t) => s + (t.profit_loss || 0), 0) || 0;
 
-      return new Response(JSON.stringify({ balances, portfolio: { totalInvested, totalProfit } }), {
+      return new Response(JSON.stringify({ balances, positions, portfolio: { totalInvested, totalProfit } }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
