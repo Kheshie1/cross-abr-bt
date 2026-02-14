@@ -1070,8 +1070,21 @@ Deno.serve(async (req) => {
       ]);
 
       const minSpread = (1 - settings.min_confidence) * 100;
+      const now = Date.now();
+      const MIN_MS = 1 * 60 * 1000;        // 1 minute
+      const MAX_MS = 2 * 60 * 60 * 1000;   // 2 hours
+
       const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.2)
-        .filter((a) => a.is_arb && a.spread_pct >= minSpread);
+        .filter((a) => {
+          if (!a.is_arb || a.spread_pct < minSpread) return false;
+          // Only trade markets resolving between 1 min and 2 hours from now
+          const endStr = a.poly_market.end_date || a.kalshi_market.end_date;
+          if (!endStr) return false;
+          const msLeft = new Date(endStr).getTime() - now;
+          return msLeft >= MIN_MS && msLeft <= MAX_MS;
+        });
+
+      console.log(`Auto-trade: ${arbs.length} arbs within 1min-2hr window`);
 
       const newArbs = arbs.filter((a) => {
         if (tradedMarketIds.has(a.poly_market.id)) return false;
