@@ -11,6 +11,27 @@ const GAMMA_URL = "https://gamma-api.polymarket.com";
 const KALSHI_URL = "https://api.elections.kalshi.com/trade-api/v2";
 const CLOB_URL = "https://clob.polymarket.com";
 
+// ──────────── ORDER SIGNING CONSTANTS ────────────
+const CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
+const NEG_RISK_CTF_EXCHANGE = "0xC5d563A36AE78145C45a50134d48A1215220f80a";
+const KNOWN_WALLET = "0xb34ff4C3134eb683F7fA8f1E090d567e13bEC7D2";
+
+const ORDER_TYPES = {
+  Order: [
+    { name: "salt", type: "uint256" },
+    { name: "maker", type: "address" },
+    { name: "signer", type: "address" },
+    { name: "taker", type: "address" },
+    { name: "tokenId", type: "uint256" },
+    { name: "makerAmount", type: "uint256" },
+    { name: "takerAmount", type: "uint256" },
+    { name: "expiration", type: "uint256" },
+    { name: "nonce", type: "uint256" },
+    { name: "feeRateBps", type: "uint256" },
+    { name: "side", type: "uint8" },
+    { name: "signatureType", type: "uint8" },
+  ],
+};
 // ──────────── POLYMARKET AUTH & PROXY ────────────
 
 // Constants for deterministic proxy wallet derivation (CREATE2)
@@ -91,30 +112,28 @@ async function buildL1Headers(privateKey: string): Promise<Record<string, string
   };
 }
 
-// Derive fresh L2 creds using L1 auth, then use them for balance
-async function deriveAndFetchBalance(privateKey: string): Promise<any> {
-  // Step 1: Derive API key using L1 auth
+// Derive fresh L2 API credentials
+async function deriveL2Creds(privateKey: string): Promise<{ apiKey: string; secret: string; passphrase: string }> {
   const l1Headers = await buildL1Headers(privateKey);
   const deriveRes = await fetch(`${CLOB_URL}/auth/derive-api-key`, {
     method: "GET",
     headers: l1Headers,
   });
-
   if (!deriveRes.ok) {
     const errText = await deriveRes.text();
     throw new Error(`Derive API key failed [${deriveRes.status}]: ${errText}`);
   }
-
   const creds = await deriveRes.json();
-  console.log("Derived fresh L2 creds for balance check");
+  console.log("Derived fresh L2 creds");
+  return creds;
+}
 
-  // Step 2: Build L2 headers with fresh creds
+// Build HMAC-signed L2 headers for a specific request
+async function buildL2Headers(privateKey: string, creds: { apiKey: string; secret: string; passphrase: string }, method: string, path: string): Promise<Record<string, string>> {
   const wallet = new Wallet(privateKey);
   const timestamp = Math.floor(Date.now() / 1000).toString();
-  const path = "/balance-allowance";
-  const message = timestamp + "GET" + path;
+  const message = timestamp + method + path;
 
-  // HMAC-SHA256 sign
   const secretBytes = Uint8Array.from(
     atob(creds.secret.replace(/-/g, "+").replace(/_/g, "/")),
     c => c.charCodeAt(0)
@@ -126,24 +145,110 @@ async function deriveAndFetchBalance(privateKey: string): Promise<any> {
   const hmacSig = btoa(String.fromCharCode(...new Uint8Array(sigBuf)))
     .replace(/\+/g, "-").replace(/\//g, "_");
 
-  const l2Headers = {
+  return {
     "POLY_ADDRESS": wallet.address,
     "POLY_API_KEY": creds.apiKey,
     "POLY_SIGNATURE": hmacSig,
     "POLY_TIMESTAMP": timestamp,
     "POLY_PASSPHRASE": creds.passphrase,
   };
+}
 
-  // Step 3: Fetch balance
-  const balRes = await fetch(`${CLOB_URL}/balance-allowance?asset_type=COLLATERAL`, {
-    headers: l2Headers,
-  });
-
+// Fetch USDC cash balance
+async function fetchCashBalance(privateKey: string): Promise<{ balance: number; allowance: number }> {
+  const creds = await deriveL2Creds(privateKey);
+  const headers = await buildL2Headers(privateKey, creds, "GET", "/balance-allowance");
+  const balRes = await fetch(`${CLOB_URL}/balance-allowance?asset_type=COLLATERAL`, { headers });
   if (!balRes.ok) {
     const errText = await balRes.text();
     throw new Error(`Balance fetch failed [${balRes.status}]: ${errText}`);
   }
+  const data = await balRes.json();
+  return { balance: Number(data.balance || 0) / 1e6, allowance: Number(data.allowance || 0) / 1e6 };
+}
 
+// ──────────── ORDER SIGNING & PLACEMENT ────────────
+
+// Round price to nearest tick (0.01)
+function roundToTick(price: number): number {
+  return Math.round(price * 100) / 100;
+}
+
+// Create, sign, and post an order to Polymarket CLOB
+async function placePolymarketOrder(
+  privateKey: string,
+  tokenId: string,
+  price: number,
+  size: number,
+  side: "BUY",
+  negRisk: boolean = true,
+): Promise<any> {
+  const wallet = new Wallet(privateKey);
+  const creds = await deriveL2Creds(privateKey);
+
+  // Round price to tick size
+  const tickPrice = roundToTick(price);
+  const sideInt = 0; // BUY
+  const signatureType = 0; // EOA
+
+  // Amounts in raw units (6 decimals for both USDC and tokens)
+  const makerAmount = String(Math.round(tickPrice * size * 1e6)); // USDC to pay
+  const takerAmount = String(Math.round(size * 1e6)); // tokens to receive
+
+  const salt = String(Math.floor(Math.random() * 1e15));
+  const exchangeAddress = negRisk ? NEG_RISK_CTF_EXCHANGE : CTF_EXCHANGE;
+
+  const order = {
+    salt,
+    maker: wallet.address,
+    signer: wallet.address,
+    taker: "0x0000000000000000000000000000000000000000",
+    tokenId,
+    makerAmount,
+    takerAmount,
+    expiration: "0",
+    nonce: "0",
+    feeRateBps: "0",
+    side: sideInt,
+    signatureType,
+  };
+
+  // EIP-712 sign
+  const domain = { name: "CTFExchange", version: "1", chainId: 137, verifyingContract: exchangeAddress };
+  const signature = await wallet._signTypedData(domain, ORDER_TYPES, order);
+
+  // Build L2 auth headers for POST /order
+  const l2Headers = await buildL2Headers(privateKey, creds, "POST", "/order");
+
+  // Post to CLOB
+  const res = await fetch(`${CLOB_URL}/order`, {
+    method: "POST",
+    headers: { ...l2Headers, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      order: { ...order, signature, side: "BUY", signatureType },
+      owner: wallet.address,
+      orderType: "GTC",
+    }),
+  });
+
+  const resData = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(`Order failed [${res.status}]: ${JSON.stringify(resData)}`);
+  }
+
+  console.log(`✅ Real order placed: ${tokenId} @ $${tickPrice} × ${size}`);
+  return resData;
+}
+
+// Derive fresh L2 creds using L1 auth, then use them for balance (legacy wrapper)
+async function deriveAndFetchBalance(privateKey: string): Promise<any> {
+  const creds = await deriveL2Creds(privateKey);
+  const headers = await buildL2Headers(privateKey, creds, "GET", "/balance-allowance");
+  const balRes = await fetch(`${CLOB_URL}/balance-allowance?asset_type=COLLATERAL`, { headers });
+  if (!balRes.ok) {
+    const errText = await balRes.text();
+    throw new Error(`Balance fetch failed [${balRes.status}]: ${errText}`);
+  }
   return balRes.json();
 }
 
@@ -484,7 +589,6 @@ Deno.serve(async (req) => {
         // Step 1: Derive proxy wallets + known user wallet
         const proxyAddress = deriveProxyAddress(eoaAddress);
         const safeAddress = deriveSafeAddress(eoaAddress);
-        const KNOWN_WALLET = "0xb34ff4C3134eb683F7fA8f1E090d567e13bEC7D2";
         const allAddresses = [eoaAddress, proxyAddress, safeAddress, KNOWN_WALLET].filter((a, i, arr) => a && a !== "" && arr.indexOf(a) === i);
         console.log(`EOA: ${eoaAddress}, Proxy: ${proxyAddress}, Safe: ${safeAddress}`);
 
@@ -736,7 +840,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ──── AUTO TRADE (executes ALL available arbs per cycle) ────
+    // ──── AUTO TRADE (real execution + balance-based sizing) ────
     if (action === "auto_trade") {
       const { data: settings } = await supabase
         .from("bot_settings")
@@ -750,7 +854,31 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Get ALL existing traded market IDs to avoid duplicates
+      const privateKey = Deno.env.get("POLYMARKET_PRIVATE_KEY");
+      if (!privateKey) {
+        return new Response(JSON.stringify({ skipped: true, reason: "No private key configured" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // Step 1: Fetch real USDC cash balance for sizing
+      let cashBalance = 0;
+      try {
+        const bal = await fetchCashBalance(privateKey);
+        cashBalance = bal.balance;
+        console.log(`Auto-trade: cash balance = $${cashBalance.toFixed(2)}`);
+      } catch (e) {
+        console.error("Failed to fetch balance:", e);
+      }
+
+      if (cashBalance < 0.10) {
+        console.log(`Auto-trade: skipped — insufficient cash ($${cashBalance.toFixed(2)})`);
+        return new Response(JSON.stringify({ skipped: true, reason: `Insufficient cash balance: $${cashBalance.toFixed(2)}` }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // Step 2: Check existing positions
       const { data: existingTrades } = await supabase
         .from("polymarket_trades")
         .select("market_id, market_question")
@@ -758,7 +886,7 @@ Deno.serve(async (req) => {
 
       const tradedMarketIds = new Set((existingTrades || []).map((t) => t.market_id));
       const tradedQuestions = new Set((existingTrades || []).map((t) => normalize(t.market_question || "")));
-      const openPositions = tradedMarketIds.size / 2; // each arb = 2 rows
+      const openPositions = tradedMarketIds.size / 2;
 
       if (openPositions >= settings.max_open_trades) {
         console.log(`Auto-trade: skipped — ${openPositions}/${settings.max_open_trades} positions filled`);
@@ -767,6 +895,23 @@ Deno.serve(async (req) => {
         });
       }
 
+      // Step 3: Calculate per-trade size from balance
+      const slotsAvailable = settings.max_open_trades - openPositions;
+      const perTradeSize = Math.min(
+        Math.floor(cashBalance / Math.min(slotsAvailable, 3) * 100) / 100, // spread across up to 3 slots
+        cashBalance * 0.5 // never use more than 50% on a single trade
+      );
+
+      if (perTradeSize < 0.10) {
+        console.log(`Auto-trade: trade size too small ($${perTradeSize.toFixed(2)})`);
+        return new Response(JSON.stringify({ skipped: true, reason: `Trade size too small: $${perTradeSize.toFixed(2)}` }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      console.log(`Auto-trade: sizing $${perTradeSize.toFixed(2)}/trade (${slotsAvailable} slots, $${cashBalance.toFixed(2)} cash)`);
+
+      // Step 4: Find arbs
       const [polymarkets, kalshiMarkets] = await Promise.all([
         fetchPolymarkets(500),
         fetchKalshiMarkets(5),
@@ -776,15 +921,13 @@ Deno.serve(async (req) => {
       const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.2)
         .filter((a) => a.is_arb && a.spread_pct >= minSpread);
 
-      // Filter out already-traded markets (by ID AND by normalized question)
       const newArbs = arbs.filter((a) => {
         if (tradedMarketIds.has(a.poly_market.id)) return false;
         if (tradedQuestions.has(normalize(a.poly_market.question))) return false;
         return true;
       });
 
-      const slotsAvailable = settings.max_open_trades - openPositions;
-      const toExecute = newArbs.slice(0, slotsAvailable);
+      const toExecute = newArbs.slice(0, Math.min(slotsAvailable, 3));
 
       if (toExecute.length === 0) {
         console.log(`Auto-trade: no new arbs (${arbs.length} found, all already traded)`);
@@ -793,29 +936,63 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Execute ALL available arbs
+      // Step 5: Execute real orders on Polymarket + record in DB
       const allInserts = [];
+      const executionResults = [];
+
       for (const arb of toExecute) {
-        const arbProfit = arb.guaranteed_profit * settings.trade_amount;
+        const arbProfit = arb.guaranteed_profit * perTradeSize;
+        let polyOrderResult = null;
+        let orderStatus = "executed";
+
+        // Try to place real order on Polymarket leg
+        const isPolyYes = arb.buy_yes_platform === "polymarket";
+        const polyTokenId = isPolyYes ? arb.poly_market.token_id_yes : arb.poly_market.token_id_no;
+        const polyPrice = isPolyYes ? arb.buy_yes_price : arb.buy_no_price;
+
+        if (polyTokenId && polyPrice > 0) {
+          try {
+            polyOrderResult = await placePolymarketOrder(
+              privateKey,
+              polyTokenId,
+              polyPrice,
+              perTradeSize / polyPrice, // shares = USDC / price
+              "BUY",
+              true // neg risk (most markets)
+            );
+            orderStatus = "live";
+            console.log(`✅ REAL order placed: ${arb.poly_market.question} @ $${polyPrice} | order: ${JSON.stringify(polyOrderResult).slice(0, 200)}`);
+          } catch (orderErr) {
+            console.error(`⚠️ Real order failed, recording as simulated: ${orderErr}`);
+            orderStatus = "simulated";
+          }
+        } else {
+          orderStatus = "simulated";
+          console.log(`⚠️ No token ID for Poly leg, recording as simulated`);
+        }
+
+        executionResults.push({ question: arb.poly_market.question, spread: arb.spread_pct, status: orderStatus, orderId: polyOrderResult?.orderID });
+
         allInserts.push(
           {
             market_id: arb.poly_market.id,
             market_question: arb.poly_market.question,
-            token_id: arb.buy_yes_platform,
-            side: `BUY_YES@${arb.buy_yes_platform.toUpperCase()}`,
-            price: arb.buy_yes_price,
-            size: settings.trade_amount,
-            status: "executed",
+            token_id: polyTokenId || arb.buy_yes_platform,
+            side: `BUY_${isPolyYes ? "YES" : "NO"}@POLYMARKET`,
+            price: polyPrice,
+            size: perTradeSize,
+            status: orderStatus,
+            order_id: polyOrderResult?.orderID || null,
             profit_loss: arbProfit,
           },
           {
             market_id: arb.poly_market.id,
             market_question: arb.poly_market.question,
-            token_id: arb.buy_no_platform,
-            side: `BUY_NO@${arb.buy_no_platform.toUpperCase()}`,
-            price: arb.buy_no_price,
-            size: settings.trade_amount,
-            status: "executed",
+            token_id: arb.buy_no_platform === "kalshi" ? (arb.kalshi_market.ticker || "kalshi") : (arb.poly_market.token_id_no || "cross"),
+            side: `BUY_${isPolyYes ? "NO" : "YES"}@KALSHI`,
+            price: isPolyYes ? arb.buy_no_price : arb.buy_yes_price,
+            size: perTradeSize,
+            status: "pending_manual", // Kalshi leg needs manual execution
             profit_loss: 0,
           }
         );
@@ -828,16 +1005,17 @@ Deno.serve(async (req) => {
 
       if (tradeErr) throw tradeErr;
 
-      for (const arb of toExecute) {
-        const arbProfit = arb.guaranteed_profit * settings.trade_amount;
-        console.log(`✅ Arb executed: ${arb.poly_market.question} | ${arb.spread_pct}% spread | +$${arbProfit.toFixed(4)}`);
+      for (const r of executionResults) {
+        console.log(`✅ Arb: ${r.question} | ${r.spread}% spread | ${r.status}${r.orderId ? ` | orderID: ${r.orderId}` : ""}`);
       }
 
       return new Response(JSON.stringify({
         executed: true,
         count: toExecute.length,
         trades,
-        arbs: toExecute.map((a) => ({ question: a.poly_market.question, spread: a.spread_pct })),
+        cashUsed: perTradeSize * toExecute.length,
+        perTradeSize,
+        results: executionResults,
       }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
