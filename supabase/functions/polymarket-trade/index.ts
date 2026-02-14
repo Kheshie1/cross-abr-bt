@@ -42,7 +42,8 @@ Deno.serve(async (req) => {
   const supabase = createClient(supabaseUrl, supabaseKey);
 
   try {
-    const { action } = await req.json();
+    const body = await req.json();
+    const { action, market_id, question, token_id, price, size, is_running, trade_amount, interval_minutes, min_confidence, max_open_trades } = body;
 
     if (action === "scan") {
       // Fetch active markets from Gamma API
@@ -50,8 +51,8 @@ Deno.serve(async (req) => {
         `${GAMMA_URL}/markets?closed=false&active=true&limit=50&order=volume24hr&ascending=false`
       );
       if (!marketsRes.ok) {
-        const body = await marketsRes.text();
-        throw new Error(`Gamma API error [${marketsRes.status}]: ${body}`);
+        const respBody = await marketsRes.text();
+        throw new Error(`Gamma API error [${marketsRes.status}]: ${respBody}`);
       }
       const markets = await marketsRes.json();
 
@@ -61,7 +62,6 @@ Deno.serve(async (req) => {
           const tokens = m.clobTokenIds ? JSON.parse(m.clobTokenIds) : [];
           const prices = m.outcomePrices ? JSON.parse(m.outcomePrices) : [];
           if (tokens.length < 2 || prices.length < 2) return false;
-          // Look for markets where one outcome is very likely (price > 0.85)
           const maxPrice = Math.max(...prices.map(Number));
           return maxPrice >= 0.85 && maxPrice <= 0.95;
         })
@@ -88,7 +88,6 @@ Deno.serve(async (req) => {
     }
 
     if (action === "execute") {
-      const { market_id, question, token_id, price, size } = await req.json().catch(() => ({}));
 
       // For now, we record the trade intent and simulate execution
       // Full CLOB order signing requires ethers.js which is complex in Deno
@@ -145,7 +144,6 @@ Deno.serve(async (req) => {
     }
 
     if (action === "toggle") {
-      const { is_running } = await req.json().catch(() => ({ is_running: false }));
       const { data, error } = await supabase
         .from("bot_settings")
         .update({ is_running, updated_at: new Date().toISOString() })
@@ -160,7 +158,6 @@ Deno.serve(async (req) => {
     }
 
     if (action === "update_settings") {
-      const { trade_amount, interval_minutes, min_confidence, max_open_trades } = await req.json().catch(() => ({}));
       const { data: current } = await supabase.from("bot_settings").select("id").limit(1).single();
       const { data, error } = await supabase
         .from("bot_settings")
