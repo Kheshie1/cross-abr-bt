@@ -87,6 +87,60 @@ Deno.serve(async (req) => {
       });
     }
 
+    if (action === "live_scan") {
+      // Fetch markets ending soon — these are "live" opportunities near resolution
+      const now = new Date();
+      const soon = new Date(now.getTime() + 48 * 60 * 60 * 1000); // within 48h
+
+      const marketsRes = await fetch(
+        `${GAMMA_URL}/markets?closed=false&active=true&limit=100&order=endDate&ascending=true`
+      );
+      if (!marketsRes.ok) {
+        const respBody = await marketsRes.text();
+        throw new Error(`Gamma API error [${marketsRes.status}]: ${respBody}`);
+      }
+      const markets = await marketsRes.json();
+
+      const liveOpps = markets
+        .filter((m: any) => {
+          const endDate = m.endDate ? new Date(m.endDate) : null;
+          if (!endDate || endDate > soon || endDate < now) return false;
+          const tokens = m.clobTokenIds ? JSON.parse(m.clobTokenIds) : [];
+          const prices = m.outcomePrices ? JSON.parse(m.outcomePrices) : [];
+          if (tokens.length < 2 || prices.length < 2) return false;
+          const maxPrice = Math.max(...prices.map(Number));
+          // Near-certain outcomes: 95%+ confidence = high profit on resolution
+          return maxPrice >= 0.93;
+        })
+        .slice(0, 15)
+        .map((m: any) => {
+          const tokens = JSON.parse(m.clobTokenIds);
+          const prices = JSON.parse(m.outcomePrices).map(Number);
+          const outcomes = m.outcomes ? JSON.parse(m.outcomes) : ["Yes", "No"];
+          const bestIdx = prices[0] > prices[1] ? 0 : 1;
+          const buyPrice = prices[bestIdx];
+          const profitPct = ((1 / buyPrice - 1) * 100).toFixed(1);
+          const endDate = new Date(m.endDate);
+          const hoursLeft = Math.max(0, (endDate.getTime() - now.getTime()) / (1000 * 60 * 60));
+          return {
+            market_id: m.conditionId || m.id,
+            question: m.question,
+            token_id: tokens[bestIdx],
+            best_outcome: outcomes[bestIdx],
+            price: buyPrice,
+            profit_pct: profitPct,
+            hours_left: Number(hoursLeft.toFixed(1)),
+            volume_24h: m.volume24hr,
+            end_date: m.endDate,
+          };
+        })
+        .sort((a: any, b: any) => a.hours_left - b.hours_left);
+
+      return new Response(JSON.stringify({ live: liveOpps }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     if (action === "execute") {
 
       // For now, we record the trade intent and simulate execution
