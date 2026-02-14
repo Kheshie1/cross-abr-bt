@@ -232,6 +232,115 @@ Deno.serve(async (req) => {
       });
     }
 
+    if (action === "auto_trade") {
+      // Called by cron — check if bot is running
+      const { data: settings } = await supabase
+        .from("bot_settings")
+        .select("*")
+        .limit(1)
+        .maybeSingle();
+
+      if (!settings?.is_running) {
+        return new Response(JSON.stringify({ skipped: true, reason: "Bot is not running" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // Count open trades
+      const { count } = await supabase
+        .from("polymarket_trades")
+        .select("*", { count: "exact", head: true })
+        .eq("status", "executed");
+
+      if ((count || 0) >= settings.max_open_trades) {
+        return new Response(JSON.stringify({ skipped: true, reason: "Max open trades reached" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // Scan for best opportunity
+      const marketsRes = await fetch(
+        `${GAMMA_URL}/markets?closed=false&active=true&limit=50&order=volume24hr&ascending=false`
+      );
+      if (!marketsRes.ok) {
+        const respBody = await marketsRes.text();
+        throw new Error(`Gamma API error [${marketsRes.status}]: ${respBody}`);
+      }
+      const markets = await marketsRes.json();
+
+      const candidates = markets
+        .filter((m: any) => {
+          const tokens = m.clobTokenIds ? JSON.parse(m.clobTokenIds) : [];
+          const prices = m.outcomePrices ? JSON.parse(m.outcomePrices) : [];
+          if (tokens.length < 2 || prices.length < 2) return false;
+          const maxPrice = Math.max(...prices.map(Number));
+          return maxPrice >= settings.min_confidence && maxPrice <= 0.97;
+        })
+        .map((m: any) => {
+          const tokens = JSON.parse(m.clobTokenIds);
+          const prices = JSON.parse(m.outcomePrices).map(Number);
+          const outcomes = m.outcomes ? JSON.parse(m.outcomes) : ["Yes", "No"];
+          const bestIdx = prices[0] > prices[1] ? 0 : 1;
+          return {
+            market_id: m.conditionId || m.id,
+            question: m.question,
+            token_id: tokens[bestIdx],
+            best_outcome: outcomes[bestIdx],
+            price: prices[bestIdx],
+          };
+        });
+
+      if (candidates.length === 0) {
+        return new Response(JSON.stringify({ skipped: true, reason: "No qualifying markets" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // Pick the best candidate (highest confidence)
+      const best = candidates.sort((a: any, b: any) => b.price - a.price)[0];
+
+      // Check we haven't already traded this market
+      const { data: existing } = await supabase
+        .from("polymarket_trades")
+        .select("id")
+        .eq("market_id", best.market_id)
+        .eq("status", "executed")
+        .limit(1)
+        .maybeSingle();
+
+      if (existing) {
+        // Try next best
+        const next = candidates.find((c: any) => c.market_id !== best.market_id);
+        if (!next) {
+          return new Response(JSON.stringify({ skipped: true, reason: "All candidates already traded" }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        Object.assign(best, next);
+      }
+
+      const { data: trade, error: tradeErr } = await supabase
+        .from("polymarket_trades")
+        .insert({
+          market_id: best.market_id,
+          market_question: best.question,
+          token_id: best.token_id,
+          side: "BUY",
+          price: best.price,
+          size: settings.trade_amount,
+          status: "executed",
+        })
+        .select()
+        .single();
+
+      if (tradeErr) throw tradeErr;
+
+      console.log(`Auto-trade executed: ${best.question} @ ${best.price}`);
+      return new Response(JSON.stringify({ executed: true, trade }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     return new Response(JSON.stringify({ error: "Unknown action" }), {
       status: 400,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
