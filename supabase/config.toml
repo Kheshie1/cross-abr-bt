@@ -1,1 +1,4 @@
 project_id = "ftisagbyexrswrzlnonf"
+
+[functions.polymarket-trade]
+verify_jwt = false
