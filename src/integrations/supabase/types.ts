@@ -110,6 +110,39 @@ export type Database = {
         }
         Relationships: []
       }
+      bot_settings: {
+        Row: {
+          created_at: string
+          id: string
+          interval_minutes: number
+          is_running: boolean
+          max_open_trades: number
+          min_confidence: number
+          trade_amount: number
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          interval_minutes?: number
+          is_running?: boolean
+          max_open_trades?: number
+          min_confidence?: number
+          trade_amount?: number
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          interval_minutes?: number
+          is_running?: boolean
+          max_open_trades?: number
+          min_confidence?: number
+          trade_amount?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
       odds_snapshots: {
         Row: {
           away_team: string
@@ -170,6 +203,51 @@ export type Database = {
           outcome_3_odds?: number | null
           sport?: string
           starts_at?: string | null
+        }
+        Relationships: []
+      }
+      polymarket_trades: {
+        Row: {
+          created_at: string
+          id: string
+          market_id: string
+          market_question: string
+          order_id: string | null
+          price: number
+          profit_loss: number | null
+          resolved_at: string | null
+          side: string
+          size: number
+          status: string
+          token_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          market_id: string
+          market_question: string
+          order_id?: string | null
+          price: number
+          profit_loss?: number | null
+          resolved_at?: string | null
+          side: string
+          size?: number
+          status?: string
+          token_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          market_id?: string
+          market_question?: string
+          order_id?: string | null
+          price?: number
+          profit_loss?: number | null
+          resolved_at?: string | null
+          side?: string
+          size?: number
+          status?: string
+          token_id?: string
         }
         Relationships: []
       }
