@@ -1,5 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { Wallet } from "https://esm.sh/ethers@5.7.2";
+import { Wallet, utils } from "https://esm.sh/ethers@5.7.2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -11,7 +11,52 @@ const GAMMA_URL = "https://gamma-api.polymarket.com";
 const KALSHI_URL = "https://api.elections.kalshi.com/trade-api/v2";
 const CLOB_URL = "https://clob.polymarket.com";
 
-// ──────────── POLYMARKET AUTH ────────────
+// ──────────── POLYMARKET AUTH & PROXY ────────────
+
+// Constants for deterministic proxy wallet derivation (CREATE2)
+const PROXY_FACTORY = "0xaB45c5A4B0c941a2F231C04C3f49182e1A254052";
+const PROXY_IMPL = "0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b";
+
+// Gnosis Safe proxy (used by browser-based Polymarket accounts)
+const SAFE_FACTORY = "0xC22834581EbC8527d974F8a1c97E1bEA4EF910BC";
+const SAFE_SINGLETON = "0x69f4D1788e39c87893C980c06EdF4b7f686e2938";
+
+// Derive EIP-1167 minimal proxy address
+function deriveProxyAddress(eoaAddress: string): string {
+  try {
+    const salt = utils.keccak256(
+      utils.solidityPack(["address", "address"], [eoaAddress, PROXY_IMPL])
+    );
+    const implNoPrefix = PROXY_IMPL.toLowerCase().replace("0x", "");
+    const initCode = "0x3d602d80600a3d3981f3363d3d373d3d3d363d73" + implNoPrefix + "5af43d82803e903d91602b57fd5bf3";
+    const initCodeHash = utils.keccak256(initCode);
+    return utils.getCreate2Address(PROXY_FACTORY, salt, initCodeHash);
+  } catch (e) {
+    console.warn("CREATE2 proxy derivation failed:", e);
+    return eoaAddress;
+  }
+}
+
+// Derive Gnosis Safe proxy address
+function deriveSafeAddress(eoaAddress: string): string {
+  try {
+    const abiCoder = new utils.AbiCoder();
+    const initializer = abiCoder.encode(
+      ["address[]", "uint256", "address", "bytes", "address", "address", "uint256", "address"],
+      [[eoaAddress], 1, "0x0000000000000000000000000000000000000000", "0x", "0x0000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000", 0, "0x0000000000000000000000000000000000000000"]
+    );
+    const salt = utils.keccak256(
+      utils.solidityPack(["bytes32", "uint256"], [utils.keccak256(initializer), 0])
+    );
+    const singletonNoPrefix = SAFE_SINGLETON.toLowerCase().replace("0x", "");
+    const creationCode = "0x608060405234801561001057600080fd5b506040516101e63803806101e68339818101604052602081101561003257600080fd5b8101908080519060200190929190505050600073ffffffffffffffffffffffffffffffffffffffff168173ffffffffffffffffffffffffffffffffffffffff1614156100ca576040517f08c379a00000000000000000000000000000000000000000000000000000000081526004018080602001828103825260228152602001806101c46022913960400191505060405180910390fd5b806000806101000a81548173ffffffffffffffffffffffffffffffffffffffff021916908373ffffffffffffffffffffffffffffffffffffffff16021790555050609b806101296000396000f3fe608060405273ffffffffffffffffffffffffffffffffffffffff600054167fa619486e0000000000000000000000000000000000000000000000000000000060003514156050578060005260206000f35b3660008037600080366000845af43d6000803e60008114156070573d6000fd5b3d6000f3fea2646970667358221220d1429297349653a4918076d650332de1a1068c5f3e07c5c82360c277770b955264736f6c63430007060033496e76616c69642073696e676c65746f6e20616464726573732070726f7669646564" + abiCoder.encode(["address"], [SAFE_SINGLETON]).replace("0x", "");
+    const initCodeHash = utils.keccak256(creationCode);
+    return utils.getCreate2Address(SAFE_FACTORY, salt, initCodeHash);
+  } catch (e) {
+    console.warn("Safe derivation failed:", e);
+    return "";
+  }
+}
 
 const CLOB_DOMAIN = {
   name: "ClobAuthDomain",
@@ -428,18 +473,36 @@ Deno.serve(async (req) => {
     if (action === "balance") {
       const balances: Record<string, any> = { polymarket: null, kalshi: null };
       let positions: any[] = [];
+      let walletInfo: any = null;
 
       const privateKey = Deno.env.get("POLYMARKET_PRIVATE_KEY");
 
       if (privateKey) {
         const wallet = new Wallet(privateKey);
-        const address = wallet.address;
+        const eoaAddress = wallet.address;
 
-        // Fetch cash balance + positions in parallel
-        const [balResult, posResult] = await Promise.allSettled([
+        // Step 1: Derive proxy wallets deterministically
+        const proxyAddress = deriveProxyAddress(eoaAddress);
+        const safeAddress = deriveSafeAddress(eoaAddress);
+        const allAddresses = [eoaAddress, proxyAddress, safeAddress].filter((a, i, arr) => a && a !== "" && arr.indexOf(a) === i);
+        console.log(`EOA: ${eoaAddress}, Proxy: ${proxyAddress}, Safe: ${safeAddress}`);
+
+        // Step 2: Fetch cash balance + positions for ALL derived addresses
+        const positionPromises = allAddresses.map(addr =>
+          fetch(`https://data-api.polymarket.com/positions?user=${addr}`)
+            .then(r => r.ok ? r.json() : [])
+            .then(data => { console.log(`Positions for ${addr}: ${(data || []).length}`); return data || []; })
+            .catch(() => [])
+        );
+
+        const [balResult, ...posResults] = await Promise.allSettled([
           deriveAndFetchBalance(privateKey),
-          fetch(`https://data-api.polymarket.com/positions?user=${address}`).then(r => r.ok ? r.json() : []),
+          ...positionPromises,
         ]);
+
+        // Merge positions from all addresses
+        const rawPositions = posResults.flatMap(r => r.status === "fulfilled" ? (r.value || []) : []);
+        console.log(`Total positions found: ${rawPositions.length}`);
 
         // Cash balance
         if (balResult.status === "fulfilled") {
@@ -453,9 +516,8 @@ Deno.serve(async (req) => {
           balances.polymarket = { balance: 0, allowance: 0, error: "Could not fetch cash balance" };
         }
 
-        // Positions (public endpoint, no auth needed)
-        if (posResult.status === "fulfilled") {
-          const rawPositions = posResult.value || [];
+        // Positions (already merged from proxy + EOA above)
+        {
           let portfolioValue = 0;
           positions = rawPositions
             .filter((p: any) => Number(p.size || 0) > 0)
@@ -482,6 +544,7 @@ Deno.serve(async (req) => {
             balances.polymarket.positionCount = rawPositions.filter((p: any) => Number(p.size || 0) > 0).length;
           }
         }
+        walletInfo = { eoa: eoaAddress, proxy: proxyAddress !== eoaAddress ? proxyAddress : null, safe: safeAddress && safeAddress !== eoaAddress ? safeAddress : null };
       } else {
         balances.polymarket = { error: "Private key not configured" };
       }
@@ -492,7 +555,9 @@ Deno.serve(async (req) => {
       const totalInvested = allTrades?.reduce((s, t) => s + (t.size || 0), 0) || 0;
       const totalProfit = allTrades?.reduce((s, t) => s + (t.profit_loss || 0), 0) || 0;
 
-      return new Response(JSON.stringify({ balances, positions, portfolio: { totalInvested, totalProfit } }), {
+      
+
+      return new Response(JSON.stringify({ balances, positions, portfolio: { totalInvested, totalProfit }, walletInfo }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
