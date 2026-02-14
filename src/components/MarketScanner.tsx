@@ -1,13 +1,17 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Slider } from "@/components/ui/slider";
 import { useMarketScan, useExecuteTrade } from "@/hooks/useBot";
 import { Loader2, ArrowRight, ArrowLeftRight } from "lucide-react";
+import { useState } from "react";
 
 export function MarketScanner() {
   const { data, isLoading } = useMarketScan();
   const execute = useExecuteTrade();
-  const markets = data?.markets || [];
+  const [minConfidence, setMinConfidence] = useState(0);
+  const allMarkets = data?.markets || [];
+  const markets = allMarkets.filter((m: any) => (m.match_score ?? 0) * 100 >= minConfidence);
   const polyCount = data?.poly_count || 0;
   const kalshiCount = data?.kalshi_count || 0;
 
@@ -19,9 +23,23 @@ export function MarketScanner() {
           CROSS-PLATFORM SCANNER
           {isLoading && <Loader2 className="ml-2 inline h-3 w-3 animate-spin" />}
         </CardTitle>
-        <p className="text-xs text-muted-foreground">
+        <p className="text-xs text-muted-foreground mb-2">
           Comparing {polyCount} Polymarket × {kalshiCount} Kalshi markets — ✅ = real arb (cost &lt; $1.00)
         </p>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-muted-foreground whitespace-nowrap">Min Match: {minConfidence}%</span>
+          <Slider
+            value={[minConfidence]}
+            onValueChange={([v]) => setMinConfidence(v)}
+            min={0}
+            max={100}
+            step={5}
+            className="flex-1"
+          />
+          <span className="text-xs text-muted-foreground whitespace-nowrap">
+            {markets.length}/{allMarkets.length}
+          </span>
+        </div>
       </CardHeader>
       <CardContent className="space-y-2 max-h-[400px] overflow-y-auto">
         {markets.length === 0 ? (
