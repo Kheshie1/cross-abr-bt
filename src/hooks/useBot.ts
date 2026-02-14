@@ -33,7 +33,7 @@ export function useMarketScan() {
   return useQuery({
     queryKey: ["market-scan"],
     queryFn: () => callBot("scan"),
-    refetchInterval: 30000,
+    refetchInterval: 60000,
   });
 }
 
@@ -41,7 +41,7 @@ export function useLiveScan() {
   return useQuery({
     queryKey: ["live-scan"],
     queryFn: () => callBot("live_scan"),
-    refetchInterval: 20000,
+    refetchInterval: 60000,
   });
 }
 
