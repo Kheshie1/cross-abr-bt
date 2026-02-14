@@ -11,6 +11,150 @@ const GAMMA_URL = "https://gamma-api.polymarket.com";
 const KALSHI_URL = "https://api.elections.kalshi.com/trade-api/v2";
 const CLOB_URL = "https://clob.polymarket.com";
 
+// ──────────── KALSHI RSA-PSS AUTH ────────────
+
+function pemToArrayBuffer(pem: string): ArrayBuffer {
+  const b64 = pem
+    .replace(/-----BEGIN [\w ]+-----/g, "")
+    .replace(/-----END [\w ]+-----/g, "")
+    .replace(/\s/g, "");
+  const binary = atob(b64);
+  const buf = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
+  return buf.buffer;
+}
+
+// Convert PKCS#1 (RSA PRIVATE KEY) to PKCS#8 format for WebCrypto
+function pkcs1ToPkcs8(pkcs1Der: ArrayBuffer): ArrayBuffer {
+  const pkcs1Bytes = new Uint8Array(pkcs1Der);
+  // PKCS#8 wraps PKCS#1 with an AlgorithmIdentifier header
+  // OID for rsaEncryption: 1.2.840.113549.1.1.1
+  const oid = new Uint8Array([0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00]);
+  const algorithmId = new Uint8Array([0x30, oid.length, ...oid]);
+  
+  // Wrap PKCS#1 key in OCTET STRING
+  const keyLenBytes = encodeDerLength(pkcs1Bytes.length);
+  const octetString = new Uint8Array([0x04, ...keyLenBytes, ...pkcs1Bytes]);
+  
+  // Version INTEGER 0
+  const version = new Uint8Array([0x02, 0x01, 0x00]);
+  
+  // SEQUENCE { version, algorithmIdentifier, privateKey }
+  const innerLen = version.length + algorithmId.length + octetString.length;
+  const innerLenBytes = encodeDerLength(innerLen);
+  const pkcs8 = new Uint8Array([0x30, ...innerLenBytes, ...version, ...algorithmId, ...octetString]);
+  return pkcs8.buffer;
+}
+
+function encodeDerLength(len: number): Uint8Array {
+  if (len < 0x80) return new Uint8Array([len]);
+  if (len < 0x100) return new Uint8Array([0x81, len]);
+  return new Uint8Array([0x82, (len >> 8) & 0xff, len & 0xff]);
+}
+
+async function kalshiSign(privateKeyPem: string, timestamp: string, method: string, path: string): Promise<string> {
+  const pathOnly = path.split("?")[0];
+  const message = `${timestamp}${method}${pathOnly}`;
+  const msgBytes = new TextEncoder().encode(message);
+
+  let keyData = pemToArrayBuffer(privateKeyPem);
+  
+  // Auto-detect PKCS#1 vs PKCS#8 and convert if needed
+  if (privateKeyPem.includes("RSA PRIVATE KEY")) {
+    keyData = pkcs1ToPkcs8(keyData);
+  }
+  
+  const cryptoKey = await crypto.subtle.importKey(
+    "pkcs8",
+    keyData,
+    { name: "RSA-PSS", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+
+  const signature = await crypto.subtle.sign(
+    { name: "RSA-PSS", saltLength: 32 },
+    cryptoKey,
+    msgBytes
+  );
+
+  return btoa(String.fromCharCode(...new Uint8Array(signature)));
+}
+
+async function kalshiHeaders(method: string, path: string): Promise<Record<string, string>> {
+  const apiKey = Deno.env.get("KALSHI_API_KEY");
+  const privateKeyPem = Deno.env.get("KALSHI_PRIVATE_KEY");
+  if (!apiKey || !privateKeyPem) throw new Error("Kalshi credentials not configured");
+
+  const timestamp = String(Date.now());
+  const signature = await kalshiSign(privateKeyPem, timestamp, method, path);
+
+  return {
+    "KALSHI-ACCESS-KEY": apiKey,
+    "KALSHI-ACCESS-TIMESTAMP": timestamp,
+    "KALSHI-ACCESS-SIGNATURE": signature,
+    "Content-Type": "application/json",
+  };
+}
+
+async function fetchKalshiBalance(): Promise<{ balance: number; portfolio_value: number }> {
+  const path = "/trade-api/v2/portfolio/balance";
+  const headers = await kalshiHeaders("GET", path);
+  const res = await fetch(`https://api.elections.kalshi.com${path}`, { headers });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Kalshi balance failed [${res.status}]: ${err}`);
+  }
+  const data = await res.json();
+  return {
+    balance: (data.balance || 0) / 100, // cents to dollars
+    portfolio_value: (data.portfolio_value || 0) / 100,
+  };
+}
+
+async function placeKalshiOrder(
+  ticker: string,
+  side: "yes" | "no",
+  yesPrice: number, // 0-1 range
+  sizeUsd: number,
+): Promise<any> {
+  const path = "/trade-api/v2/portfolio/orders";
+  const headers = await kalshiHeaders("POST", path);
+
+  // Kalshi prices are in cents (1-99)
+  const priceCents = Math.round(yesPrice * 100);
+  // Count = number of contracts. Each contract pays $1. cost = count * price_cents / 100
+  const count = Math.max(1, Math.round(sizeUsd / (priceCents / 100)));
+  const clientOrderId = crypto.randomUUID();
+
+  const body = {
+    ticker,
+    client_order_id: clientOrderId,
+    type: "limit",
+    action: "buy",
+    side,
+    count,
+    yes_price: side === "yes" ? priceCents : undefined,
+    no_price: side === "no" ? (100 - priceCents) : undefined,
+  };
+
+  console.log(`Kalshi order: ${JSON.stringify(body)}`);
+
+  const res = await fetch(`https://api.elections.kalshi.com${path}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(`Kalshi order failed [${res.status}]: ${JSON.stringify(data)}`);
+  }
+
+  console.log(`✅ Kalshi order placed: ${ticker} ${side} @ ${priceCents}¢ × ${count}`);
+  return data.order || data;
+}
+
 // ──────────── ORDER SIGNING CONSTANTS ────────────
 const CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
 const NEG_RISK_CTF_EXCHANGE = "0xC5d563A36AE78145C45a50134d48A1215220f80a";
@@ -654,7 +798,15 @@ Deno.serve(async (req) => {
         balances.polymarket = { error: "Private key not configured" };
       }
 
-      balances.kalshi = { error: "Kalshi API key not configured" };
+      // Fetch Kalshi balance
+      try {
+        const kalshiBal = await fetchKalshiBalance();
+        balances.kalshi = kalshiBal;
+        console.log(`Kalshi balance: $${kalshiBal.balance}, portfolio: $${kalshiBal.portfolio_value}`);
+      } catch (e) {
+        console.error("Kalshi balance error:", e);
+        balances.kalshi = { balance: 0, portfolio_value: 0, error: String(e) };
+      }
 
       const { data: allTrades } = await supabase.from("polymarket_trades").select("size, profit_loss");
       const totalInvested = allTrades?.reduce((s, t) => s + (t.size || 0), 0) || 0;
@@ -971,7 +1123,31 @@ Deno.serve(async (req) => {
           console.log(`⚠️ No token ID for Poly leg, recording as simulated`);
         }
 
-        executionResults.push({ question: arb.poly_market.question, spread: arb.spread_pct, status: orderStatus, orderId: polyOrderResult?.orderID });
+        // Try to place real order on Kalshi leg
+        let kalshiLegStatus = "simulated";
+        let kalshiOrderId: string | null = null;
+        const kalshiTicker = arb.kalshi_market.ticker;
+        const isKalshiNo = isPolyYes; // if Poly=YES, Kalshi=NO
+        const kalshiPrice = isKalshiNo ? arb.buy_no_price : arb.buy_yes_price;
+
+        if (kalshiTicker && kalshiPrice > 0) {
+          try {
+            const kalshiResult = await placeKalshiOrder(
+              kalshiTicker,
+              isKalshiNo ? "no" : "yes",
+              isKalshiNo ? (1 - kalshiPrice) : kalshiPrice, // yes_price for the API
+              perTradeSize,
+            );
+            kalshiLegStatus = "live";
+            kalshiOrderId = kalshiResult?.order_id || kalshiResult?.id || null;
+            console.log(`✅ Kalshi order: ${kalshiTicker} | ${kalshiLegStatus}`);
+          } catch (kalshiErr) {
+            console.error(`⚠️ Kalshi order failed: ${kalshiErr}`);
+            kalshiLegStatus = "simulated";
+          }
+        }
+
+        executionResults.push({ question: arb.poly_market.question, spread: arb.spread_pct, status: orderStatus, kalshiStatus: kalshiLegStatus, orderId: polyOrderResult?.orderID });
 
         allInserts.push(
           {
@@ -992,7 +1168,8 @@ Deno.serve(async (req) => {
             side: `BUY_${isPolyYes ? "NO" : "YES"}@KALSHI`,
             price: isPolyYes ? arb.buy_no_price : arb.buy_yes_price,
             size: perTradeSize,
-            status: "pending_manual", // Kalshi leg needs manual execution
+            status: kalshiLegStatus,
+            order_id: kalshiOrderId,
             profit_loss: 0,
           }
         );
