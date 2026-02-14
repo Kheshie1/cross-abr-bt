@@ -36,15 +36,15 @@ export function MarketScanner() {
                 <p className="text-sm font-medium truncate">{m.question}</p>
                 <div className="mt-1.5 flex flex-wrap items-center gap-2">
                   <Badge variant="outline" className="text-xs bg-profit/10 text-profit border-profit/30">
-                    Yes ${m.yes_price.toFixed(3)}
+                    Yes ${(m.yes_price ?? 0).toFixed(3)}
                   </Badge>
                   <span className="text-xs text-muted-foreground">+</span>
                   <Badge variant="outline" className="text-xs bg-accent/10 text-accent border-accent/30">
-                    No ${m.no_price.toFixed(3)}
+                    No ${(m.no_price ?? 0).toFixed(3)}
                   </Badge>
                   <span className="text-xs text-muted-foreground">=</span>
                   <Badge className="text-xs bg-profit/20 text-profit border-profit/40 font-bold">
-                    ${m.total_cost.toFixed(3)} → +{m.spread_pct}%
+                    ${(m.total_cost ?? 0).toFixed(3)} → +{m.spread_pct ?? 0}%
                   </Badge>
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
