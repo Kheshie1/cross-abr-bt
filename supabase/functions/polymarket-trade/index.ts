@@ -501,7 +501,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ──── AUTO TRADE ────
+    // ──── AUTO TRADE (executes ALL available arbs per cycle) ────
     if (action === "auto_trade") {
       const { data: settings } = await supabase
         .from("bot_settings")
@@ -515,12 +515,18 @@ Deno.serve(async (req) => {
         });
       }
 
-      const { count } = await supabase
+      // Get ALL existing traded market IDs to avoid duplicates
+      const { data: existingTrades } = await supabase
         .from("polymarket_trades")
-        .select("*", { count: "exact", head: true })
+        .select("market_id, market_question")
         .eq("status", "executed");
 
-      if ((count || 0) / 2 >= settings.max_open_trades) {
+      const tradedMarketIds = new Set((existingTrades || []).map((t) => t.market_id));
+      const tradedQuestions = new Set((existingTrades || []).map((t) => normalize(t.market_question || "")));
+      const openPositions = tradedMarketIds.size / 2; // each arb = 2 rows
+
+      if (openPositions >= settings.max_open_trades) {
+        console.log(`Auto-trade: skipped — ${openPositions}/${settings.max_open_trades} positions filled`);
         return new Response(JSON.stringify({ skipped: true, reason: "Max open arb positions reached" }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
@@ -535,65 +541,69 @@ Deno.serve(async (req) => {
       const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.4)
         .filter((a) => a.is_arb && a.spread_pct >= minSpread);
 
-      if (arbs.length === 0) {
-        return new Response(JSON.stringify({ skipped: true, reason: "No cross-platform arbs found" }), {
+      // Filter out already-traded markets (by ID AND by normalized question)
+      const newArbs = arbs.filter((a) => {
+        if (tradedMarketIds.has(a.poly_market.id)) return false;
+        if (tradedQuestions.has(normalize(a.poly_market.question))) return false;
+        return true;
+      });
+
+      const slotsAvailable = settings.max_open_trades - openPositions;
+      const toExecute = newArbs.slice(0, slotsAvailable);
+
+      if (toExecute.length === 0) {
+        console.log(`Auto-trade: no new arbs (${arbs.length} found, all already traded)`);
+        return new Response(JSON.stringify({ skipped: true, reason: "No new cross-platform arbs" }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      let best = null;
-      for (const arb of arbs) {
-        const { data: existing } = await supabase
-          .from("polymarket_trades")
-          .select("id")
-          .eq("market_id", arb.poly_market.id)
-          .eq("status", "executed")
-          .limit(1)
-          .maybeSingle();
-
-        if (!existing) {
-          best = arb;
-          break;
-        }
-      }
-
-      if (!best) {
-        return new Response(JSON.stringify({ skipped: true, reason: "All arb opportunities already traded" }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-
-      const arbProfit = best.guaranteed_profit * settings.trade_amount;
-      const { data: trades, error: tradeErr } = await supabase
-        .from("polymarket_trades")
-        .insert([
+      // Execute ALL available arbs
+      const allInserts = [];
+      for (const arb of toExecute) {
+        const arbProfit = arb.guaranteed_profit * settings.trade_amount;
+        allInserts.push(
           {
-            market_id: best.poly_market.id,
-            market_question: best.poly_market.question,
-            token_id: best.buy_yes_platform,
-            side: `BUY_YES@${best.buy_yes_platform.toUpperCase()}`,
-            price: best.buy_yes_price,
+            market_id: arb.poly_market.id,
+            market_question: arb.poly_market.question,
+            token_id: arb.buy_yes_platform,
+            side: `BUY_YES@${arb.buy_yes_platform.toUpperCase()}`,
+            price: arb.buy_yes_price,
             size: settings.trade_amount,
             status: "executed",
             profit_loss: arbProfit,
           },
           {
-            market_id: best.poly_market.id,
-            market_question: best.poly_market.question,
-            token_id: best.buy_no_platform,
-            side: `BUY_NO@${best.buy_no_platform.toUpperCase()}`,
-            price: best.buy_no_price,
+            market_id: arb.poly_market.id,
+            market_question: arb.poly_market.question,
+            token_id: arb.buy_no_platform,
+            side: `BUY_NO@${arb.buy_no_platform.toUpperCase()}`,
+            price: arb.buy_no_price,
             size: settings.trade_amount,
             status: "executed",
             profit_loss: 0,
-          },
-        ])
+          }
+        );
+      }
+
+      const { data: trades, error: tradeErr } = await supabase
+        .from("polymarket_trades")
+        .insert(allInserts)
         .select();
 
       if (tradeErr) throw tradeErr;
 
-      console.log(`Arb executed: ${best.poly_market.question} | ${best.spread_pct}% | +$${arbProfit.toFixed(4)}`);
-      return new Response(JSON.stringify({ executed: true, trades, arb: best }), {
+      for (const arb of toExecute) {
+        const arbProfit = arb.guaranteed_profit * settings.trade_amount;
+        console.log(`✅ Arb executed: ${arb.poly_market.question} | ${arb.spread_pct}% spread | +$${arbProfit.toFixed(4)}`);
+      }
+
+      return new Response(JSON.stringify({
+        executed: true,
+        count: toExecute.length,
+        trades,
+        arbs: toExecute.map((a) => ({ question: a.poly_market.question, spread: a.spread_pct })),
+      }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
