@@ -53,43 +53,34 @@ function extractEntities(s: string): string[] {
     "each", "every", "other", "another", "some", "many", "much",
     "very", "just", "also", "only", "even", "still", "already",
     "been", "being", "have", "having", "here", "there",
-    "win", "won", "lose", "lost", "beat", "defeated", "game",
-    "match", "price", "market", "high", "low", "temperature", "temp",
-    "minimum", "maximum", "day", "week", "month", "year", "today",
-    "tomorrow", "yesterday", "points", "scored", "team",
-    "new", "city", "state", "north", "south", "east", "west",
-    "united", "san", "los", "las", "cup", "open", "final", "finals",
-    "2026", "2025", "2027", "feb", "mar", "apr", "may", "jun",
-    "jul", "aug", "sep", "oct", "nov", "dec", "january", "february",
-    "march", "april", "june", "july", "august", "september", "october",
-    "november", "december", "sunday", "monday", "tuesday", "wednesday",
-    "thursday", "friday", "saturday",
+    "win", "won", "lose", "lost", "beat", "game", "match",
+    "price", "market", "high", "low", "day", "week", "month", "year",
+    "today", "tomorrow", "yesterday", "points", "team",
+    "cup", "open", "final", "finals",
+    "2026", "2025", "2027",
   ]);
   return norm
     .split(" ")
     .filter((w) => w.length > 2 && !stop.has(w));
 }
 
-// Match quality assessment — strict entity-based matching
+// Match quality — relaxed for more coverage
 function matchMarkets(polyQ: string, kalshiQ: string, polyEnts: string[], kalshiEnts: Set<string>): number {
-  // Count entity matches
   const entityMatches = polyEnts.filter((e) => kalshiEnts.has(e));
   const matchCount = entityMatches.length;
 
-  // REQUIRE at least 2 matching entities for any match
-  if (matchCount < 2) return 0;
-
-  // Entity overlap score (Jaccard-like)
-  const entityScore = matchCount / Math.max(polyEnts.length, kalshiEnts.size);
-
-  // Bigram dice for additional confirmation
   const dice = diceCoefficient(polyQ, kalshiQ);
 
-  // High confidence: 70% entity, 30% bigram
-  const combined = entityScore * 0.7 + dice * 0.3;
+  // Allow single entity match IF dice similarity is strong
+  if (matchCount === 0) return 0;
+  if (matchCount === 1 && dice < 0.35) return 0;
 
-  // Bonus if many entities match (3+ = strong signal)
-  const bonus = matchCount >= 3 ? 0.1 : 0;
+  const entityScore = matchCount / Math.max(polyEnts.length, kalshiEnts.size);
+
+  // 55% entity, 45% bigram — more weight on fuzzy for broader matching
+  const combined = entityScore * 0.55 + dice * 0.45;
+
+  const bonus = matchCount >= 3 ? 0.1 : matchCount >= 2 ? 0.05 : 0;
 
   return Math.min(1, combined + bonus);
 }
@@ -112,7 +103,7 @@ interface MarketData {
 
 // ──────────── POLYMARKET FETCH ────────────
 
-async function fetchPolymarkets(limit = 200): Promise<MarketData[]> {
+async function fetchPolymarkets(limit = 500): Promise<MarketData[]> {
   const res = await fetch(
     `${GAMMA_URL}/markets?closed=false&active=true&limit=${limit}&order=volume24hr&ascending=false`
   );
@@ -143,7 +134,7 @@ async function fetchPolymarkets(limit = 200): Promise<MarketData[]> {
 
 // ──────────── KALSHI FETCH (multi-page, MVE excluded) ────────────
 
-async function fetchKalshiMarkets(maxPages = 3): Promise<MarketData[]> {
+async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
   const allMarkets: MarketData[] = [];
   let cursor: string | undefined;
 
@@ -230,24 +221,39 @@ interface CrossPlatformArb {
 function findCrossPlatformArbs(
   polymarkets: MarketData[],
   kalshiMarkets: MarketData[],
-  minMatchScore = 0.35
+  minMatchScore = 0.2
 ): CrossPlatformArb[] {
   const arbs: CrossPlatformArb[] = [];
 
-  // Pre-compute Kalshi entities
-  const kalshiIndexed = kalshiMarkets.map((k) => ({
+  // Build inverted index: entity → list of kalshi indices
+  const kalshiData = kalshiMarkets.map((k) => ({
     market: k,
     entities: new Set(extractEntities(k.question)),
   }));
+  const entityIndex = new Map<string, number[]>();
+  for (let i = 0; i < kalshiData.length; i++) {
+    for (const ent of kalshiData[i].entities) {
+      if (!entityIndex.has(ent)) entityIndex.set(ent, []);
+      entityIndex.get(ent)!.push(i);
+    }
+  }
 
   for (const poly of polymarkets) {
     let bestMatch: MarketData | null = null;
     let bestScore = 0;
 
     const polyEntities = extractEntities(poly.question);
-    if (polyEntities.length < 2) continue; // Skip questions too vague to match
+    if (polyEntities.length < 1) continue;
 
-    for (const { market: kalshi, entities: kalshiEnts } of kalshiIndexed) {
+    // Only check Kalshi markets that share at least one entity
+    const candidateIndices = new Set<number>();
+    for (const ent of polyEntities) {
+      const indices = entityIndex.get(ent);
+      if (indices) for (const idx of indices) candidateIndices.add(idx);
+    }
+
+    for (const idx of candidateIndices) {
+      const { market: kalshi, entities: kalshiEnts } = kalshiData[idx];
       const score = matchMarkets(poly.question, kalshi.question, polyEntities, kalshiEnts);
       if (score > bestScore && score >= minMatchScore) {
         bestScore = score;
@@ -328,14 +334,13 @@ Deno.serve(async (req) => {
     // ──── SCAN ────
     if (action === "scan") {
       const [polymarkets, kalshiMarkets] = await Promise.all([
-        fetchPolymarkets(200),
-        fetchKalshiMarkets(3), // up to 3000 Kalshi markets
+        fetchPolymarkets(500),
+        fetchKalshiMarkets(5),
       ]);
 
       console.log(`Scan: ${polymarkets.length} Poly × ${kalshiMarkets.length} Kalshi`);
 
-      // Show top matches by spread even if not arb-able
-      const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.3).slice(0, 30);
+      const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.15).slice(0, 50);
       const realArbCount = arbs.filter((a) => a.is_arb).length;
 
       console.log(`Results: ${arbs.length} matches, ${realArbCount} real arbs`);
@@ -360,8 +365,8 @@ Deno.serve(async (req) => {
       const soon = new Date(now.getTime() + 72 * 60 * 60 * 1000); // 72h window
 
       const [polymarkets, kalshiMarkets] = await Promise.all([
-        fetchPolymarkets(200),
-        fetchKalshiMarkets(2),
+        fetchPolymarkets(500),
+        fetchKalshiMarkets(5),
       ]);
 
       const filterSoon = (m: MarketData) => {
@@ -370,13 +375,11 @@ Deno.serve(async (req) => {
         return end > now && end <= soon;
       };
 
-      // Check both sides for ending-soon
       const soonPoly = polymarkets.filter(filterSoon);
       const soonKalshi = kalshiMarkets.filter(filterSoon);
 
-      // Match soon-ending poly against all kalshi + all poly against soon-ending kalshi
-      const arbs1 = findCrossPlatformArbs(soonPoly, kalshiMarkets, 0.3);
-      const arbs2 = findCrossPlatformArbs(polymarkets, soonKalshi, 0.3);
+      const arbs1 = findCrossPlatformArbs(soonPoly, kalshiMarkets, 0.15);
+      const arbs2 = findCrossPlatformArbs(polymarkets, soonKalshi, 0.15);
 
       // Deduplicate by poly market id
       const seen = new Set<string>();
@@ -533,12 +536,12 @@ Deno.serve(async (req) => {
       }
 
       const [polymarkets, kalshiMarkets] = await Promise.all([
-        fetchPolymarkets(200),
-        fetchKalshiMarkets(3),
+        fetchPolymarkets(500),
+        fetchKalshiMarkets(5),
       ]);
 
       const minSpread = (1 - settings.min_confidence) * 100;
-      const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.4)
+      const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.2)
         .filter((a) => a.is_arb && a.spread_pct >= minSpread);
 
       // Filter out already-traded markets (by ID AND by normalized question)
