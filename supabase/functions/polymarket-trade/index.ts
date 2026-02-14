@@ -9,40 +9,6 @@ const corsHeaders = {
 const CLOB_URL = "https://clob.polymarket.com";
 const GAMMA_URL = "https://gamma-api.polymarket.com";
 
-// Only target fast-resolving crypto markets
-const CRYPTO_KEYWORDS = ["btc", "bitcoin", "eth", "ethereum", "sol", "solana"];
-const MAX_RESOLVE_HOURS = 0.25; // 15 minutes max
-
-function isCryptoFastMarket(m: any): boolean {
-  const q = (m.question || "").toLowerCase();
-  const desc = (m.description || "").toLowerCase();
-  const tags = (m.tags || []).map((t: string) => t.toLowerCase());
-  const text = `${q} ${desc} ${tags.join(" ")}`;
-
-  // Must mention a target crypto asset
-  const hasCrypto = CRYPTO_KEYWORDS.some((kw) => text.includes(kw));
-  if (!hasCrypto) return false;
-
-  // Must be a short-duration / fast-resolving market (5-min or 15-min price markets)
-  const fastPatterns = [
-    /\d+[\s-]?min/i,
-    /5[\s-]?minute/i,
-    /15[\s-]?minute/i,
-    /price.*at.*\d{1,2}:\d{2}/i,
-    /above|below|over|under/i,
-  ];
-  const isFast = fastPatterns.some((p) => p.test(q));
-
-  // Also check end date — reject anything resolving > 15 min from now
-  const endDate = m.endDate ? new Date(m.endDate) : null;
-  const now = new Date();
-  if (endDate) {
-    const hoursToEnd = (endDate.getTime() - now.getTime()) / (1000 * 60 * 60);
-    if (hoursToEnd > MAX_RESOLVE_HOURS || hoursToEnd < 0) return false;
-  }
-
-  return isFast;
-}
 
 interface MarketData {
   id: string;
@@ -91,10 +57,9 @@ Deno.serve(async (req) => {
       }
       const markets = await marketsRes.json();
 
-      // Filter to crypto fast-resolving markets only (BTC/ETH/SOL 5-min/15-min)
+      // Find markets with profitable pricing (high confidence outcomes)
       const opportunities = markets
         .filter((m: any) => {
-          if (!isCryptoFastMarket(m)) return false;
           const tokens = m.clobTokenIds ? JSON.parse(m.clobTokenIds) : [];
           const prices = m.outcomePrices ? JSON.parse(m.outcomePrices) : [];
           if (tokens.length < 2 || prices.length < 2) return false;
@@ -139,11 +104,6 @@ Deno.serve(async (req) => {
 
       const liveOpps = markets
         .filter((m: any) => {
-          // Crypto fast-market filter for live scan too
-          const q = (m.question || "").toLowerCase();
-          const hasCrypto = CRYPTO_KEYWORDS.some((kw) => q.includes(kw));
-          if (!hasCrypto) return false;
-
           const endDate = m.endDate ? new Date(m.endDate) : null;
           if (!endDate || endDate > soon || endDate < now) return false;
           const tokens = m.clobTokenIds ? JSON.parse(m.clobTokenIds) : [];
@@ -310,7 +270,6 @@ Deno.serve(async (req) => {
 
       const candidates = markets
         .filter((m: any) => {
-          if (!isCryptoFastMarket(m)) return false;
           const tokens = m.clobTokenIds ? JSON.parse(m.clobTokenIds) : [];
           const prices = m.outcomePrices ? JSON.parse(m.outcomePrices) : [];
           if (tokens.length < 2 || prices.length < 2) return false;
