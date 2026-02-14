@@ -36,6 +36,14 @@ export function useMarketScan() {
   });
 }
 
+export function useLiveScan() {
+  return useQuery({
+    queryKey: ["live-scan"],
+    queryFn: () => callBot("live_scan"),
+    refetchInterval: 20000,
+  });
+}
+
 export function useToggleBot() {
   const qc = useQueryClient();
   return useMutation({
