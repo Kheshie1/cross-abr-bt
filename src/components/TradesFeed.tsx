@@ -1,7 +1,8 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { formatDistanceToNow } from "date-fns";
-import { ArrowLeftRight } from "lucide-react";
+import { ArrowLeftRight, Timer } from "lucide-react";
+import { useState, useEffect } from "react";
 
 interface Trade {
   id: string;
@@ -13,14 +14,67 @@ interface Trade {
   profit_loss: number | null;
   created_at: string;
   market_id: string;
+  resolved_at?: string | null;
 }
 
 interface TradesFeedProps {
   trades: Trade[];
 }
 
+function Countdown({ target }: { target: string }) {
+  const [timeLeft, setTimeLeft] = useState("");
+  const [isExpired, setIsExpired] = useState(false);
+
+  useEffect(() => {
+    function update() {
+      const diff = new Date(target).getTime() - Date.now();
+      if (diff <= 0) {
+        setTimeLeft("RESOLVED");
+        setIsExpired(true);
+        return;
+      }
+      const h = Math.floor(diff / 3600000);
+      const m = Math.floor((diff % 3600000) / 60000);
+      const s = Math.floor((diff % 60000) / 1000);
+      setTimeLeft(
+        h > 0 ? `${h}h ${m}m ${s}s` : m > 0 ? `${m}m ${s}s` : `${s}s`
+      );
+      setIsExpired(false);
+    }
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, [target]);
+
+  return (
+    <Badge
+      variant="outline"
+      className={`text-xs font-mono gap-1 ${
+        isExpired
+          ? "bg-profit/15 text-profit border-profit/30"
+          : "bg-primary/10 text-primary border-primary/30 animate-pulse"
+      }`}
+    >
+      <Timer className="h-3 w-3" />
+      {timeLeft}
+    </Badge>
+  );
+}
+
 export function TradesFeed({ trades }: TradesFeedProps) {
-  const arbPairs: { key: string; question: string; yesLeg: string; noLeg: string; yesPrice: number; noPrice: number; size: number; profit: number; time: string; status: string }[] = [];
+  const arbPairs: {
+    key: string;
+    question: string;
+    yesLeg: string;
+    noLeg: string;
+    yesPrice: number;
+    noPrice: number;
+    size: number;
+    profit: number;
+    time: string;
+    status: string;
+    resolved_at?: string | null;
+  }[] = [];
   const seen = new Set<string>();
 
   for (const t of trades) {
@@ -32,7 +86,6 @@ export function TradesFeed({ trades }: TradesFeedProps) {
     const noLeg = pair.find((p) => p.side.startsWith("BUY_NO"));
 
     if (yesLeg && noLeg) {
-      // Extract platform from side like "BUY_YES@POLYMARKET"
       const yesPlatform = yesLeg.side.includes("@") ? yesLeg.side.split("@")[1] : "?";
       const noPlatform = noLeg.side.includes("@") ? noLeg.side.split("@")[1] : "?";
       arbPairs.push({
@@ -46,6 +99,7 @@ export function TradesFeed({ trades }: TradesFeedProps) {
         profit: (yesLeg.profit_loss || 0) + (noLeg.profit_loss || 0),
         time: yesLeg.created_at,
         status: yesLeg.status,
+        resolved_at: yesLeg.resolved_at || noLeg.resolved_at,
       });
     } else {
       arbPairs.push({
@@ -59,6 +113,7 @@ export function TradesFeed({ trades }: TradesFeedProps) {
         profit: t.profit_loss || 0,
         time: t.created_at,
         status: t.status,
+        resolved_at: t.resolved_at,
       });
     }
   }
@@ -97,6 +152,7 @@ export function TradesFeed({ trades }: TradesFeedProps) {
                       ${a.size.toFixed(2)} @ {a.yesPrice.toFixed(2)}
                     </Badge>
                   )}
+                  {a.resolved_at && <Countdown target={a.resolved_at} />}
                   <span className="text-xs text-muted-foreground">
                     {formatDistanceToNow(new Date(a.time), { addSuffix: true })}
                   </span>
@@ -104,7 +160,7 @@ export function TradesFeed({ trades }: TradesFeedProps) {
               </div>
               <Badge
                 className={`ml-2 ${
-                  a.status === "executed"
+                  a.status === "executed" || a.status === "live"
                     ? "bg-profit/20 text-profit border-profit/30"
                     : a.status === "failed"
                     ? "bg-loss/20 text-loss border-loss/30"
