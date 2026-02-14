@@ -11,46 +11,95 @@ const GAMMA_URL = "https://gamma-api.polymarket.com";
 const KALSHI_URL = "https://api.elections.kalshi.com/trade-api/v2";
 const CLOB_URL = "https://clob.polymarket.com";
 
-// ──────────── HMAC SIGNING (Polymarket L2 Auth) ────────────
+// ──────────── POLYMARKET AUTH ────────────
 
-// base64url decode (matching Python's base64.urlsafe_b64decode)
-function b64urlDecode(s: string): Uint8Array {
-  const std = s.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = std + "=".repeat((4 - std.length % 4) % 4);
-  const binary = atob(padded);
-  return Uint8Array.from(binary, c => c.charCodeAt(0));
-}
+const CLOB_DOMAIN = {
+  name: "ClobAuthDomain",
+  version: "1",
+  chainId: 137,
+};
 
-// base64url encode (matching Python's base64.urlsafe_b64encode)
-function b64urlEncode(buf: ArrayBuffer): string {
-  return btoa(String.fromCharCode(...new Uint8Array(buf)))
-    .replace(/\+/g, "-").replace(/\//g, "_");
-}
+const CLOB_TYPES = {
+  ClobAuth: [
+    { name: "address", type: "address" },
+    { name: "timestamp", type: "string" },
+    { name: "nonce", type: "uint256" },
+    { name: "message", type: "string" },
+  ],
+};
 
-async function hmacSign(secret: string, message: string): Promise<string> {
-  const keyData = b64urlDecode(secret);
-  const key = await crypto.subtle.importKey(
-    "raw", keyData, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
-  );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
-  return b64urlEncode(sig);
-}
-
-async function buildPolyHeaders(
-  apiKey: string, secret: string, passphrase: string, privateKey: string,
-  method: string, path: string
-): Promise<Record<string, string>> {
-  const timestamp = Math.floor(Date.now() / 1000).toString();
-  const message = timestamp + method + path;
-  const sig = await hmacSign(secret, message);
+async function buildL1Headers(privateKey: string): Promise<Record<string, string>> {
   const wallet = new Wallet(privateKey);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const value = {
+    address: wallet.address,
+    timestamp: String(timestamp),
+    nonce: 0,
+    message: "This message attests that I control the given wallet",
+  };
+  const sig = await wallet._signTypedData(CLOB_DOMAIN, CLOB_TYPES, value);
   return {
     "POLY_ADDRESS": wallet.address,
-    "POLY_API_KEY": apiKey,
     "POLY_SIGNATURE": sig,
-    "POLY_TIMESTAMP": timestamp,
-    "POLY_PASSPHRASE": passphrase,
+    "POLY_TIMESTAMP": String(timestamp),
+    "POLY_NONCE": "0",
   };
+}
+
+// Derive fresh L2 creds using L1 auth, then use them for balance
+async function deriveAndFetchBalance(privateKey: string): Promise<any> {
+  // Step 1: Derive API key using L1 auth
+  const l1Headers = await buildL1Headers(privateKey);
+  const deriveRes = await fetch(`${CLOB_URL}/auth/derive-api-key`, {
+    method: "GET",
+    headers: l1Headers,
+  });
+
+  if (!deriveRes.ok) {
+    const errText = await deriveRes.text();
+    throw new Error(`Derive API key failed [${deriveRes.status}]: ${errText}`);
+  }
+
+  const creds = await deriveRes.json();
+  console.log("Derived fresh L2 creds for balance check");
+
+  // Step 2: Build L2 headers with fresh creds
+  const wallet = new Wallet(privateKey);
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const path = "/balance-allowance";
+  const message = timestamp + "GET" + path;
+
+  // HMAC-SHA256 sign
+  const secretBytes = Uint8Array.from(
+    atob(creds.secret.replace(/-/g, "+").replace(/_/g, "/")),
+    c => c.charCodeAt(0)
+  );
+  const key = await crypto.subtle.importKey(
+    "raw", secretBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const sigBuf = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+  const hmacSig = btoa(String.fromCharCode(...new Uint8Array(sigBuf)))
+    .replace(/\+/g, "-").replace(/\//g, "_");
+
+  const l2Headers = {
+    "POLY_ADDRESS": wallet.address,
+    "POLY_API_KEY": creds.apiKey,
+    "POLY_SIGNATURE": hmacSig,
+    "POLY_TIMESTAMP": timestamp,
+    "POLY_PASSPHRASE": creds.passphrase,
+  };
+
+  // Step 3: Fetch balance
+  const balRes = await fetch(`${CLOB_URL}/balance-allowance?asset_type=COLLATERAL`, {
+    headers: l2Headers,
+  });
+
+  if (!balRes.ok) {
+    const errText = await balRes.text();
+    throw new Error(`Balance fetch failed [${balRes.status}]: ${errText}`);
+  }
+
+  return balRes.json();
 }
 
 // ──────────── MATCHING ENGINE ────────────
@@ -379,34 +428,21 @@ Deno.serve(async (req) => {
     if (action === "balance") {
       const balances: Record<string, any> = { polymarket: null, kalshi: null };
 
-      // Polymarket balance via CLOB L2 API
+      // Polymarket balance — derive fresh L2 creds from private key
       try {
-        const apiKey = Deno.env.get("POLYMARKET_API_KEY");
-        const apiSecret = Deno.env.get("POLYMARKET_API_SECRET");
-        const passphrase = Deno.env.get("POLYMARKET_PASSPHRASE");
         const privateKey = Deno.env.get("POLYMARKET_PRIVATE_KEY");
 
-        if (apiKey && apiSecret && passphrase && privateKey) {
-          const signPath = "/balance-allowance"; // sign without query params
-          const fullPath = "/balance-allowance?asset_type=COLLATERAL";
-          const headers = await buildPolyHeaders(apiKey, apiSecret, passphrase, privateKey, "GET", signPath);
-          const res = await fetch(`${CLOB_URL}${fullPath}`, { headers });
-          if (res.ok) {
-            const data = await res.json();
-            balances.polymarket = {
-              balance: Number(data.balance || 0) / 1e6, // USDC has 6 decimals
-              allowance: Number(data.allowance || 0) / 1e6,
-            };
-          } else {
-            const errText = await res.text();
-            console.error(`Polymarket balance error [${res.status}]: ${errText}`);
-            balances.polymarket = { error: `API error ${res.status}` };
-          }
+        if (privateKey) {
+          const data = await deriveAndFetchBalance(privateKey);
+          balances.polymarket = {
+            balance: Number(data.balance || 0) / 1e6,
+            allowance: Number(data.allowance || 0) / 1e6,
+          };
         } else {
-          balances.polymarket = { error: "API keys not configured" };
+          balances.polymarket = { error: "Private key not configured" };
         }
       } catch (e) {
-        console.error("Polymarket balance fetch failed:", e);
+        console.error("Polymarket balance failed:", e);
         balances.polymarket = { error: e instanceof Error ? e.message : "Unknown error" };
       }
 
