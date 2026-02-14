@@ -1071,7 +1071,7 @@ Deno.serve(async (req) => {
 
       const minSpread = (1 - settings.min_confidence) * 100;
       const now = Date.now();
-      const MIN_MS = 1 * 60 * 1000;        // 1 minute
+      const MIN_MS = 100;                  // 0.1 second
       const MAX_MS = 2 * 60 * 60 * 1000;   // 2 hours
 
       const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.2)
