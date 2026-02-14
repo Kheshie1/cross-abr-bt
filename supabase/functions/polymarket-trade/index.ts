@@ -481,10 +481,11 @@ Deno.serve(async (req) => {
         const wallet = new Wallet(privateKey);
         const eoaAddress = wallet.address;
 
-        // Step 1: Derive proxy wallets deterministically
+        // Step 1: Derive proxy wallets + known user wallet
         const proxyAddress = deriveProxyAddress(eoaAddress);
         const safeAddress = deriveSafeAddress(eoaAddress);
-        const allAddresses = [eoaAddress, proxyAddress, safeAddress].filter((a, i, arr) => a && a !== "" && arr.indexOf(a) === i);
+        const KNOWN_WALLET = "0xb34ff4C3134eb683F7fA8f1E090d567e13bEC7D2";
+        const allAddresses = [eoaAddress, proxyAddress, safeAddress, KNOWN_WALLET].filter((a, i, arr) => a && a !== "" && arr.indexOf(a) === i);
         console.log(`EOA: ${eoaAddress}, Proxy: ${proxyAddress}, Safe: ${safeAddress}`);
 
         // Step 2: Fetch cash balance + positions for ALL derived addresses
