@@ -1162,6 +1162,8 @@ Deno.serve(async (req) => {
 
         executionResults.push({ question: arb.poly_market.question, spread: arb.spread_pct, status: orderStatus, kalshiStatus: kalshiLegStatus, orderId: polyOrderResult?.orderID });
 
+        const marketEndDate = arb.poly_market.end_date || arb.kalshi_market.end_date || null;
+
         allInserts.push(
           {
             market_id: arb.poly_market.id,
@@ -1173,6 +1175,7 @@ Deno.serve(async (req) => {
             status: orderStatus,
             order_id: polyOrderResult?.orderID || null,
             profit_loss: arbProfit,
+            resolved_at: marketEndDate,
           },
           {
             market_id: arb.poly_market.id,
@@ -1184,6 +1187,7 @@ Deno.serve(async (req) => {
             status: kalshiLegStatus,
             order_id: kalshiOrderId,
             profit_loss: 0,
+            resolved_at: marketEndDate,
           }
         );
       }
