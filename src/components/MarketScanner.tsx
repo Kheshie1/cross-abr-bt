@@ -18,22 +18,26 @@ export function MarketScanner() {
           {isLoading && <Loader2 className="ml-2 inline h-3 w-3 animate-spin" />}
         </CardTitle>
         <p className="text-xs text-muted-foreground">
-          Markets where Yes + No &lt; $1.00 — guaranteed profit on resolution
+          Top markets by spread — {"\u2705"} = real arb (Yes + No &lt; $1.00)
         </p>
       </CardHeader>
       <CardContent className="space-y-2 max-h-[400px] overflow-y-auto">
         {markets.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-8">
-            {isLoading ? "Scanning for arbitrage..." : "No arb opportunities found"}
+            {isLoading ? "Scanning markets..." : "No markets loaded"}
           </p>
         ) : (
           markets.map((m: any) => (
             <div
               key={m.market_id}
-              className="flex items-start justify-between rounded-md border border-border bg-secondary/30 p-3"
+              className={`flex items-start justify-between rounded-md border p-3 ${
+                m.is_arb ? "border-profit/50 bg-profit/5" : "border-border bg-secondary/30"
+              }`}
             >
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate">{m.question}</p>
+                <p className="text-sm font-medium truncate">
+                  {m.is_arb && "✅ "}{m.question}
+                </p>
                 <div className="mt-1.5 flex flex-wrap items-center gap-2">
                   <Badge variant="outline" className="text-xs bg-profit/10 text-profit border-profit/30">
                     Yes ${(m.yes_price ?? 0).toFixed(3)}
@@ -43,8 +47,10 @@ export function MarketScanner() {
                     No ${(m.no_price ?? 0).toFixed(3)}
                   </Badge>
                   <span className="text-xs text-muted-foreground">=</span>
-                  <Badge className="text-xs bg-profit/20 text-profit border-profit/40 font-bold">
-                    ${(m.total_cost ?? 0).toFixed(3)} → +{m.spread_pct ?? 0}%
+                  <Badge className={`text-xs font-bold ${
+                    m.is_arb ? "bg-profit/20 text-profit border-profit/40" : "bg-muted text-muted-foreground border-border"
+                  }`}>
+                    ${(m.total_cost ?? 0).toFixed(3)} → {(m.spread_pct ?? 0) > 0 ? "+" : ""}{m.spread_pct ?? 0}%
                   </Badge>
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -65,7 +71,7 @@ export function MarketScanner() {
                     no_price: m.no_price,
                   })
                 }
-                disabled={execute.isPending}
+                disabled={execute.isPending || !m.is_arb}
               >
                 <ArrowRight className="h-4 w-4" />
               </Button>
