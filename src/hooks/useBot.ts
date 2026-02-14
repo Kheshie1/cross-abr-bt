@@ -29,6 +29,14 @@ export function useBotStatus() {
   });
 }
 
+export function useBalance() {
+  return useQuery({
+    queryKey: ["balance"],
+    queryFn: () => callBot("balance"),
+    refetchInterval: 120000,
+  });
+}
+
 export function useMarketScan() {
   return useQuery({
     queryKey: ["market-scan"],
