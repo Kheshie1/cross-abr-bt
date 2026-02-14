@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { Wallet } from "https://esm.sh/ethers@5.7.2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -8,6 +9,49 @@ const corsHeaders = {
 
 const GAMMA_URL = "https://gamma-api.polymarket.com";
 const KALSHI_URL = "https://api.elections.kalshi.com/trade-api/v2";
+const CLOB_URL = "https://clob.polymarket.com";
+
+// ──────────── HMAC SIGNING (Polymarket L2 Auth) ────────────
+
+// base64url decode (matching Python's base64.urlsafe_b64decode)
+function b64urlDecode(s: string): Uint8Array {
+  const std = s.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = std + "=".repeat((4 - std.length % 4) % 4);
+  const binary = atob(padded);
+  return Uint8Array.from(binary, c => c.charCodeAt(0));
+}
+
+// base64url encode (matching Python's base64.urlsafe_b64encode)
+function b64urlEncode(buf: ArrayBuffer): string {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, "-").replace(/\//g, "_");
+}
+
+async function hmacSign(secret: string, message: string): Promise<string> {
+  const keyData = b64urlDecode(secret);
+  const key = await crypto.subtle.importKey(
+    "raw", keyData, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+  return b64urlEncode(sig);
+}
+
+async function buildPolyHeaders(
+  apiKey: string, secret: string, passphrase: string, privateKey: string,
+  method: string, path: string
+): Promise<Record<string, string>> {
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const message = timestamp + method + path;
+  const sig = await hmacSign(secret, message);
+  const wallet = new Wallet(privateKey);
+  return {
+    "POLY_ADDRESS": wallet.address,
+    "POLY_API_KEY": apiKey,
+    "POLY_SIGNATURE": sig,
+    "POLY_TIMESTAMP": timestamp,
+    "POLY_PASSPHRASE": passphrase,
+  };
+}
 
 // ──────────── MATCHING ENGINE ────────────
 
@@ -330,6 +374,54 @@ Deno.serve(async (req) => {
       buy_yes_platform, buy_no_platform, buy_yes_price, buy_no_price,
       size, is_running, trade_amount, interval_minutes, min_confidence, max_open_trades,
     } = body;
+
+    // ──── BALANCE ────
+    if (action === "balance") {
+      const balances: Record<string, any> = { polymarket: null, kalshi: null };
+
+      // Polymarket balance via CLOB L2 API
+      try {
+        const apiKey = Deno.env.get("POLYMARKET_API_KEY");
+        const apiSecret = Deno.env.get("POLYMARKET_API_SECRET");
+        const passphrase = Deno.env.get("POLYMARKET_PASSPHRASE");
+        const privateKey = Deno.env.get("POLYMARKET_PRIVATE_KEY");
+
+        if (apiKey && apiSecret && passphrase && privateKey) {
+          const signPath = "/balance-allowance"; // sign without query params
+          const fullPath = "/balance-allowance?asset_type=COLLATERAL";
+          const headers = await buildPolyHeaders(apiKey, apiSecret, passphrase, privateKey, "GET", signPath);
+          const res = await fetch(`${CLOB_URL}${fullPath}`, { headers });
+          if (res.ok) {
+            const data = await res.json();
+            balances.polymarket = {
+              balance: Number(data.balance || 0) / 1e6, // USDC has 6 decimals
+              allowance: Number(data.allowance || 0) / 1e6,
+            };
+          } else {
+            const errText = await res.text();
+            console.error(`Polymarket balance error [${res.status}]: ${errText}`);
+            balances.polymarket = { error: `API error ${res.status}` };
+          }
+        } else {
+          balances.polymarket = { error: "API keys not configured" };
+        }
+      } catch (e) {
+        console.error("Polymarket balance fetch failed:", e);
+        balances.polymarket = { error: e instanceof Error ? e.message : "Unknown error" };
+      }
+
+      // Kalshi balance — requires RSA-PSS key which we may not have
+      balances.kalshi = { error: "Kalshi API key not configured" };
+
+      // Also include DB stats
+      const { data: allTrades } = await supabase.from("polymarket_trades").select("size, profit_loss");
+      const totalInvested = allTrades?.reduce((s, t) => s + (t.size || 0), 0) || 0;
+      const totalProfit = allTrades?.reduce((s, t) => s + (t.profit_loss || 0), 0) || 0;
+
+      return new Response(JSON.stringify({ balances, portfolio: { totalInvested, totalProfit } }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     // ──── SCAN ────
     if (action === "scan") {
