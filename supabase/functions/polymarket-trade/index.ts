@@ -1067,7 +1067,25 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Step 2: Check existing positions
+      // Step 2: Check LIVE on-chain positions (not DB records which include old/resolved trades)
+      const wallet = new Wallet(privateKey);
+      const eoaAddress = wallet.address;
+      const proxyAddress = deriveProxyAddress(eoaAddress);
+      const safeAddress = deriveSafeAddress(eoaAddress);
+      const allAddresses = [eoaAddress, proxyAddress, safeAddress, KNOWN_WALLET].filter((a, i, arr) => a && a !== "" && arr.indexOf(a) === i);
+
+      const positionPromises = allAddresses.map(addr =>
+        fetch(`https://data-api.polymarket.com/positions?user=${addr}`)
+          .then(r => r.ok ? r.json() : [])
+          .then(data => (data || []).filter((p: any) => Number(p.size || 0) > 0))
+          .catch(() => [])
+      );
+      const posResults = await Promise.all(positionPromises);
+      const livePositions = posResults.flat();
+      const openPositions = livePositions.length;
+      console.log(`Auto-trade: ${openPositions} live on-chain positions`);
+
+      // Also get traded market IDs/questions from DB for duplicate prevention
       const { data: existingTrades } = await supabase
         .from("polymarket_trades")
         .select("market_id, market_question")
@@ -1075,7 +1093,6 @@ Deno.serve(async (req) => {
 
       const tradedMarketIds = new Set((existingTrades || []).map((t) => t.market_id));
       const tradedQuestions = new Set((existingTrades || []).map((t) => normalize(t.market_question || "")));
-      const openPositions = tradedMarketIds.size / 2;
 
       if (openPositions >= settings.max_open_trades) {
         console.log(`Auto-trade: skipped — ${openPositions}/${settings.max_open_trades} positions filled`);
