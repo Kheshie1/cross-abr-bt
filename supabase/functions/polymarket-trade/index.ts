@@ -298,7 +298,7 @@ async function buildL2Headers(privateKey: string, creds: { apiKey: string; secre
   };
 }
 
-// Fetch USDC cash balance
+// Fetch USDC cash balance from L2 (EOA wallet)
 async function fetchCashBalance(privateKey: string): Promise<{ balance: number; allowance: number }> {
   const creds = await deriveL2Creds(privateKey);
   const headers = await buildL2Headers(privateKey, creds, "GET", "/balance-allowance");
@@ -309,6 +309,41 @@ async function fetchCashBalance(privateKey: string): Promise<{ balance: number; 
   }
   const data = await balRes.json();
   return { balance: Number(data.balance || 0) / 1e6, allowance: Number(data.allowance || 0) / 1e6 };
+}
+
+// Fetch on-chain USDC balance for any wallet address via Polygon RPC
+const POLYGON_RPC = "https://polygon-rpc.com";
+const USDC_CONTRACT = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"; // USDC.e on Polygon
+
+async function fetchOnChainUSDC(walletAddress: string): Promise<number> {
+  // ERC-20 balanceOf(address) selector = 0x70a08231
+  const paddedAddr = walletAddress.slice(2).toLowerCase().padStart(64, "0");
+  const callData = `0x70a08231${paddedAddr}`;
+  const body = JSON.stringify({
+    jsonrpc: "2.0", id: 1, method: "eth_call",
+    params: [{ to: USDC_CONTRACT, data: callData }, "latest"],
+  });
+  const res = await fetch(POLYGON_RPC, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+  const json = await res.json();
+  if (json.error) throw new Error(`RPC error: ${json.error.message}`);
+  return parseInt(json.result || "0x0", 16) / 1e6;
+}
+
+// Fetch combined USDC cash: EOA L2 balance + KNOWN_WALLET on-chain balance
+async function fetchTotalCashBalance(privateKey: string): Promise<{ balance: number; allowance: number; eoaBalance: number; knownWalletBalance: number }> {
+  const [l2Bal, knownBal] = await Promise.allSettled([
+    fetchCashBalance(privateKey),
+    fetchOnChainUSDC(KNOWN_WALLET),
+  ]);
+  const eoa = l2Bal.status === "fulfilled" ? l2Bal.value : { balance: 0, allowance: 0 };
+  const known = knownBal.status === "fulfilled" ? knownBal.value : 0;
+  console.log(`Cash breakdown: EOA=$${eoa.balance.toFixed(2)}, KNOWN_WALLET=$${known.toFixed(2)}`);
+  return {
+    balance: eoa.balance + known,
+    allowance: eoa.allowance,
+    eoaBalance: eoa.balance,
+    knownWalletBalance: known,
+  };
 }
 
 // ──────────── ORDER SIGNING & PLACEMENT ────────────
@@ -745,7 +780,7 @@ Deno.serve(async (req) => {
         );
 
         const [balResult, ...posResults] = await Promise.allSettled([
-          deriveAndFetchBalance(privateKey),
+          fetchTotalCashBalance(privateKey),
           ...positionPromises,
         ]);
 
@@ -753,12 +788,14 @@ Deno.serve(async (req) => {
         const rawPositions = posResults.flatMap(r => r.status === "fulfilled" ? (r.value || []) : []);
         console.log(`Total positions found: ${rawPositions.length}`);
 
-        // Cash balance
+        // Cash balance (combined EOA + KNOWN_WALLET)
         if (balResult.status === "fulfilled") {
           const data = balResult.value;
           balances.polymarket = {
-            balance: Number(data.balance || 0) / 1e6,
-            allowance: Number(data.allowance || 0) / 1e6,
+            balance: data.balance,
+            allowance: data.allowance,
+            eoaBalance: data.eoaBalance,
+            knownWalletBalance: data.knownWalletBalance,
           };
         } else {
           console.error("Balance fetch failed:", balResult.reason);
@@ -1013,12 +1050,12 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Step 1: Fetch real USDC cash balance for sizing
+      // Step 1: Fetch real USDC cash balance for sizing (EOA + KNOWN_WALLET combined)
       let cashBalance = 0;
       try {
-        const bal = await fetchCashBalance(privateKey);
+        const bal = await fetchTotalCashBalance(privateKey);
         cashBalance = bal.balance;
-        console.log(`Auto-trade: cash balance = $${cashBalance.toFixed(2)}`);
+        console.log(`Auto-trade: cash balance = $${cashBalance.toFixed(2)} (EOA=$${bal.eoaBalance.toFixed(2)}, Known=$${bal.knownWalletBalance.toFixed(2)})`);
       } catch (e) {
         console.error("Failed to fetch balance:", e);
       }
