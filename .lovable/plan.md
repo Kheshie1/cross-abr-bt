@@ -1,56 +1,70 @@
 
 
-# Sports Arbitrage Scanner & Dashboard
+## Automatically Fetch Proxy URL from Evoxt API
 
-## Overview
-A real-time arbitrage opportunity scanner that monitors odds across Pinnacle and Betway SA, identifies profitable arbitrage opportunities (1%+ margin), and presents them with precise stake calculations for quick action.
+### Problem
+The current `PROXY_URL` secret is hardcoded and breaks when the VPS IP changes or the proxy service goes down. The edge function currently gets "Connection refused" errors.
 
-## Core Features
+### Solution
+Use the Evoxt API to dynamically fetch the VPS server IP at runtime, then construct the proxy URL from it automatically.
 
-### 1. Dashboard Home
-- Live feed of current arbitrage opportunities sorted by profit margin
-- Key stats: total opportunities found today, average margin, best opportunity
-- Status indicators showing whether each bookmaker's odds feed is active
-- Auto-refresh with configurable scan interval
+### How It Works
 
-### 2. Odds Scanner Engine (Backend)
-- **Pinnacle**: Edge function fetching odds via their official API across all sports
-- **Betway SA**: Edge function using Firecrawl to scrape current odds from their website
-- Odds normalization to a common format for comparison
-- Match matching algorithm to pair the same events across both bookmakers
+1. The edge function calls `GET https://api.evoxt.com/listservers?username=YOUR_USERNAME` with Basic auth
+2. The response contains all servers with their `primaryip` field
+3. The function picks the first active server's IP and constructs the proxy URL (e.g., `http://IP:8080`)
+4. This replaces the static `PROXY_URL` secret
 
-### 3. Arbitrage Calculator
-- Real-time arbitrage detection comparing odds across both books
-- Filter to only show opportunities with 1%+ guaranteed profit
-- Optimal stake calculator — given a total bankroll, shows exact amounts to place on each side
-- Support for 2-way and 3-way markets (match winner, over/under, etc.)
+### Steps
 
-### 4. Opportunity Detail View
-- Event details (sport, league, teams, start time)
-- Side-by-side odds comparison (Pinnacle vs Betway SA)
-- Calculated arbitrage percentage
-- Recommended stakes for each bookmaker
-- Expected guaranteed profit amount
-- Direct links to the event on each bookmaker's website for quick manual placement
+**Step 1: Store Evoxt Credentials as Secrets**
+- `EVOXT_PUBLIC_KEY` - your public key (already provided)
+- `EVOXT_PRIVATE_KEY` - your private key (needed from you)
+- `EVOXT_USERNAME` - your Evoxt account username (needed from you)
 
-### 5. History & Analytics
-- Log of all detected arbitrage opportunities
-- Track which ones were acted on (manual marking)
-- Profit/loss tracking over time
-- Charts showing opportunity frequency by sport, time of day, and margin range
+**Step 2: Update the Edge Function**
+Modify `supabase/functions/polymarket-trade/index.ts`:
 
-### 6. Settings & Configuration
-- API key input for Pinnacle
-- Scan frequency configuration
-- Minimum arbitrage threshold setting
-- Bankroll amount for stake calculations
-- Sport/league filters
-- Sound/browser notification alerts for new opportunities
+- Add a new `getProxyUrlFromEvoxt()` function that:
+  - Reads `EVOXT_PUBLIC_KEY`, `EVOXT_PRIVATE_KEY`, `EVOXT_USERNAME` from env
+  - Calls `GET https://api.evoxt.com/listservers?username={username}` with `Authorization: Basic base64(publickey:privatekey)`
+  - Parses the response to find the first active server's `primaryip`
+  - Returns `http://{primaryip}:8080` as the proxy URL
+  - Caches the result so it doesn't call Evoxt on every trade
 
-## Technical Approach
-- **Frontend**: React dashboard with real-time updates via polling
-- **Backend**: Supabase edge functions for odds fetching and arbitrage calculation
-- **Data**: Supabase database to store odds history and detected opportunities
-- **Scraping**: Firecrawl connector for Betway SA odds extraction
-- **Note**: Bet placement is manual — the app provides direct links and calculated stakes for you to place bets yourself quickly
+- Update the `proxiedFetch()` function to:
+  - First try `PROXY_URL` env var (manual override)
+  - If not set, call `getProxyUrlFromEvoxt()` to get the IP dynamically
+  - Use the result to route Polymarket orders through the VPS
+
+**Step 3: Optional - Add a "vps_status" Action**
+Add a new action to the edge function that returns the VPS details from Evoxt (IP, status, OS) so the dashboard can show VPS health.
+
+### Technical Details
+
+```text
+Edge Function Flow:
+  proxiedFetch() called
+       |
+       v
+  PROXY_URL env set? --yes--> use it directly
+       |
+       no
+       v
+  getProxyUrlFromEvoxt()
+       |
+       v
+  GET https://api.evoxt.com/listservers?username=xxx
+  Authorization: Basic base64(pubkey:privkey)
+       |
+       v
+  Parse response -> find active server -> primaryip
+       |
+       v
+  Construct http://{ip}:8080 -> use as proxy
+```
+
+### What We Need From You
+- Your **Evoxt private key** (from https://console.evoxt.com/apicredentials.php)
+- Your **Evoxt username** (your login username)
 
