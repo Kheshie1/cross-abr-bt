@@ -1269,6 +1269,32 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ──── TEST ORDER (debug geo-block) ────
+    if (action === "test_order") {
+      const privateKey = Deno.env.get("POLYMARKET_PRIVATE_KEY");
+      if (!privateKey) throw new Error("No private key");
+
+      // Use a real token ID from ETH market (YES side, very cheap test)
+      const testTokenId = body.token_id || "58727333181627179512377681687586666008807822047430987604306144030899661571074";
+      const testPrice = body.price || 0.99;
+      const testSize = body.test_size || 0.01;
+
+      console.log(`🔍 TEST ORDER: token=${testTokenId}, price=${testPrice}, size=${testSize}`);
+
+      try {
+        const result = await placePolymarketOrder(privateKey, testTokenId, testPrice, testSize / testPrice, "BUY", true);
+        return new Response(JSON.stringify({ success: true, result }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        console.error(`❌ TEST ORDER FAILED: ${errorMsg}`);
+        return new Response(JSON.stringify({ success: false, error: errorMsg }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
     return new Response(JSON.stringify({ error: "Unknown action" }), {
       status: 400,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
