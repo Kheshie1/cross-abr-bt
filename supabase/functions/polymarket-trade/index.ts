@@ -346,21 +346,88 @@ async function fetchTotalCashBalance(privateKey: string): Promise<{ balance: num
   };
 }
 
+// ──────────── EVOXT DYNAMIC PROXY ────────────
+
+let cachedProxyUrl: string | null = null;
+let cachedProxyExpiry = 0;
+const PROXY_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+async function getProxyUrlFromEvoxt(): Promise<string | null> {
+  if (cachedProxyUrl && Date.now() < cachedProxyExpiry) {
+    return cachedProxyUrl;
+  }
+
+  const publicKey = Deno.env.get("EVOXT_PUBLIC_KEY");
+  const privateKey = Deno.env.get("EVOXT_PRIVATE_KEY");
+  const username = Deno.env.get("EVOXT_USERNAME");
+
+  if (!publicKey || !privateKey || !username) {
+    console.log("Evoxt credentials not configured, skipping dynamic proxy");
+    return null;
+  }
+
+  try {
+    const auth = btoa(`${publicKey}:${privateKey}`);
+    const res = await fetch(`https://api.evoxt.com/listservers?username=${encodeURIComponent(username)}`, {
+      headers: { "Authorization": `Basic ${auth}` },
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      console.error(`Evoxt API error [${res.status}]: ${err}`);
+      return cachedProxyUrl; // return stale cache if available
+    }
+
+    const data = await res.json();
+    // Find first active server with an IP
+    let serverIp: string | null = null;
+    if (Array.isArray(data)) {
+      const active = data.find((s: any) => s.primaryip && s.status === "Active");
+      if (active) serverIp = active.primaryip;
+      else if (data.length > 0 && data[0].primaryip) serverIp = data[0].primaryip;
+    } else if (typeof data === "object") {
+      // Response might be keyed by server ID
+      for (const key of Object.keys(data)) {
+        const s = data[key];
+        if (s?.primaryip) {
+          serverIp = s.primaryip;
+          if (s.status === "Active") break;
+        }
+      }
+    }
+
+    if (!serverIp) {
+      console.error("Evoxt: no server IP found in response");
+      return cachedProxyUrl;
+    }
+
+    cachedProxyUrl = `http://${serverIp}:8080`;
+    cachedProxyExpiry = Date.now() + PROXY_CACHE_TTL;
+    console.log(`Evoxt: resolved proxy URL → ${cachedProxyUrl}`);
+    return cachedProxyUrl;
+  } catch (e) {
+    console.error("Evoxt API call failed:", e);
+    return cachedProxyUrl;
+  }
+}
+
 // ──────────── PROXY HELPER ────────────
 
 async function proxiedFetch(url: string, init: RequestInit): Promise<Response> {
-  const proxyUrl = Deno.env.get("PROXY_URL");
+  // Priority: PROXY_URL env var (manual override) → Evoxt dynamic → direct
+  let proxyUrl = Deno.env.get("PROXY_URL") || null;
   if (!proxyUrl) {
-    console.log("No PROXY_URL set, using direct connection");
+    proxyUrl = await getProxyUrlFromEvoxt();
+  }
+
+  if (!proxyUrl) {
+    console.log("No proxy available, using direct connection");
     return fetch(url, init);
   }
 
-  // Use Deno's built-in proxy support via the HTTPS_PROXY env var approach
-  // For HTTP CONNECT proxies, we build a proxied request
   const proxy = new URL(proxyUrl);
   const target = new URL(url);
 
-  // Build CONNECT-style proxy request
   const proxyAuth = proxy.username
     ? `Basic ${btoa(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`)}`
     : undefined;
@@ -368,14 +435,10 @@ async function proxiedFetch(url: string, init: RequestInit): Promise<Response> {
   const headers = new Headers(init.headers);
   headers.set("Host", target.host);
 
-  // For HTTP proxies, send the full URL as the request path
-  const proxyRequestUrl = `${proxy.protocol}//${proxy.host}${target.pathname}${target.search}`;
-
   const proxyHeaders: Record<string, string> = {};
   headers.forEach((v, k) => { proxyHeaders[k] = v; });
   if (proxyAuth) proxyHeaders["Proxy-Authorization"] = proxyAuth;
 
-  // Use the proxy as an HTTP forward proxy
   const res = await fetch(url, {
     ...init,
     headers: proxyHeaders,
@@ -1333,6 +1396,34 @@ Deno.serve(async (req) => {
         console.error(`❌ TEST ORDER FAILED: ${errorMsg}`);
         return new Response(JSON.stringify({ success: false, error: errorMsg }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // ──── VPS STATUS (Evoxt) ────
+    if (action === "vps_status") {
+      const publicKey = Deno.env.get("EVOXT_PUBLIC_KEY");
+      const privateKey = Deno.env.get("EVOXT_PRIVATE_KEY");
+      const username = Deno.env.get("EVOXT_USERNAME");
+      if (!publicKey || !privateKey || !username) {
+        return new Response(JSON.stringify({ error: "Evoxt credentials not configured" }), {
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      try {
+        const auth = btoa(`${publicKey}:${privateKey}`);
+        const res = await fetch(`https://api.evoxt.com/listservers?username=${encodeURIComponent(username)}`, {
+          headers: { "Authorization": `Basic ${auth}` },
+        });
+        const data = await res.json();
+        // Also return current proxy URL
+        const currentProxy = await getProxyUrlFromEvoxt();
+        return new Response(JSON.stringify({ servers: data, proxy_url: currentProxy }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: String(e) }), {
+          status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
     }
