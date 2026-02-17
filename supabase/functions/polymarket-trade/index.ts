@@ -346,6 +346,48 @@ async function fetchTotalCashBalance(privateKey: string): Promise<{ balance: num
   };
 }
 
+// ──────────── PROXY HELPER ────────────
+
+async function proxiedFetch(url: string, init: RequestInit): Promise<Response> {
+  const proxyUrl = Deno.env.get("PROXY_URL");
+  if (!proxyUrl) {
+    console.log("No PROXY_URL set, using direct connection");
+    return fetch(url, init);
+  }
+
+  // Use Deno's built-in proxy support via the HTTPS_PROXY env var approach
+  // For HTTP CONNECT proxies, we build a proxied request
+  const proxy = new URL(proxyUrl);
+  const target = new URL(url);
+
+  // Build CONNECT-style proxy request
+  const proxyAuth = proxy.username
+    ? `Basic ${btoa(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`)}`
+    : undefined;
+
+  const headers = new Headers(init.headers);
+  headers.set("Host", target.host);
+
+  // For HTTP proxies, send the full URL as the request path
+  const proxyRequestUrl = `${proxy.protocol}//${proxy.host}${target.pathname}${target.search}`;
+
+  const proxyHeaders: Record<string, string> = {};
+  headers.forEach((v, k) => { proxyHeaders[k] = v; });
+  if (proxyAuth) proxyHeaders["Proxy-Authorization"] = proxyAuth;
+
+  // Use the proxy as an HTTP forward proxy
+  const res = await fetch(url, {
+    ...init,
+    headers: proxyHeaders,
+    // @ts-ignore - Deno supports client proxy
+    client: Deno.createHttpClient({
+      proxy: { url: `${proxy.protocol}//${proxy.host}`, basicAuth: proxy.username ? { username: decodeURIComponent(proxy.username), password: decodeURIComponent(proxy.password) } : undefined },
+    }),
+  });
+
+  return res;
+}
+
 // ──────────── ORDER SIGNING & PLACEMENT ────────────
 
 // Round price to nearest tick (0.01)
@@ -353,7 +395,7 @@ function roundToTick(price: number): number {
   return Math.round(price * 100) / 100;
 }
 
-// Create, sign, and post an order to Polymarket CLOB
+// Create, sign, and post an order to Polymarket CLOB (via proxy)
 async function placePolymarketOrder(
   privateKey: string,
   tokenId: string,
@@ -399,8 +441,8 @@ async function placePolymarketOrder(
   // Build L2 auth headers for POST /order
   const l2Headers = await buildL2Headers(privateKey, creds, "POST", "/order");
 
-  // Post to CLOB
-  const res = await fetch(`${CLOB_URL}/order`, {
+  // Post to CLOB — routed through proxy to bypass geo-block
+  const res = await proxiedFetch(`${CLOB_URL}/order`, {
     method: "POST",
     headers: { ...l2Headers, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -415,7 +457,7 @@ async function placePolymarketOrder(
     throw new Error(`Order failed [${res.status}]: ${JSON.stringify(resData)}`);
   }
 
-  console.log(`✅ Real order placed: ${tokenId} @ $${tickPrice} × ${size}`);
+  console.log(`✅ Real order placed via proxy: ${tokenId} @ $${tickPrice} × ${size}`);
   return resData;
 }
 
