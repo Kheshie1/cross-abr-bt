@@ -330,22 +330,44 @@ async function fetchOnChainUSDC(walletAddress: string): Promise<number> {
   return parseInt(json.result || "0x0", 16) / 1e6;
 }
 
-// Fetch combined USDC cash: EOA L2 balance + KNOWN_WALLET + KNOWN_WALLET_2 on-chain balance
+// Fetch Polymarket internal (L2) cash balance for any wallet via profile API
+async function fetchPolymarketProfileBalance(walletAddress: string): Promise<number> {
+  try {
+    const res = await fetch(`https://data-api.polymarket.com/profile?address=${walletAddress}`);
+    if (!res.ok) return 0;
+    const data = await res.json();
+    // Profile API returns collateralBalance or cashBalance in USDC (already decimal)
+    const bal = Number(data.collateralBalance || data.cashBalance || data.profileBalanceUsdc || 0);
+    console.log(`Polymarket profile balance for ${walletAddress.slice(0,8)}...: $${bal.toFixed(2)}`);
+    return bal;
+  } catch (e) {
+    console.log(`Failed to fetch profile balance for ${walletAddress}: ${e.message}`);
+    return 0;
+  }
+}
+
+// Fetch combined USDC cash: EOA L2 balance + all known wallets (on-chain + Polymarket L2)
 async function fetchTotalCashBalance(privateKey: string): Promise<{ balance: number; allowance: number; eoaBalance: number; knownWalletBalance: number }> {
-  const [l2Bal, knownBal, known2Bal] = await Promise.allSettled([
+  const [l2Bal, knownOnChain, known2OnChain, knownProfile, known2Profile] = await Promise.allSettled([
     fetchCashBalance(privateKey),
     fetchOnChainUSDC(KNOWN_WALLET),
     fetchOnChainUSDC(KNOWN_WALLET_2),
+    fetchPolymarketProfileBalance(KNOWN_WALLET),
+    fetchPolymarketProfileBalance(KNOWN_WALLET_2),
   ]);
   const eoa = l2Bal.status === "fulfilled" ? l2Bal.value : { balance: 0, allowance: 0 };
-  const known = knownBal.status === "fulfilled" ? knownBal.value : 0;
-  const known2 = known2Bal.status === "fulfilled" ? known2Bal.value : 0;
-  console.log(`Cash breakdown: EOA=$${eoa.balance.toFixed(2)}, KNOWN_WALLET=$${known.toFixed(2)}, KNOWN_WALLET_2=$${known2.toFixed(2)}`);
+  const kOnChain = knownOnChain.status === "fulfilled" ? knownOnChain.value : 0;
+  const k2OnChain = known2OnChain.status === "fulfilled" ? known2OnChain.value : 0;
+  const kProfile = knownProfile.status === "fulfilled" ? knownProfile.value : 0;
+  const k2Profile = known2Profile.status === "fulfilled" ? known2Profile.value : 0;
+  // Use whichever is higher: on-chain or L2 profile balance (avoid double-counting)
+  const knownTotal = Math.max(kOnChain, kProfile) + Math.max(k2OnChain, k2Profile);
+  console.log(`Cash breakdown: EOA=$${eoa.balance.toFixed(2)}, KNOWN_WALLET=onchain:$${kOnChain.toFixed(2)}/profile:$${kProfile.toFixed(2)}, KNOWN_WALLET_2=onchain:$${k2OnChain.toFixed(2)}/profile:$${k2Profile.toFixed(2)}, total_known=$${knownTotal.toFixed(2)}`);
   return {
-    balance: eoa.balance + known + known2,
+    balance: eoa.balance + knownTotal,
     allowance: eoa.allowance,
     eoaBalance: eoa.balance,
-    knownWalletBalance: known + known2,
+    knownWalletBalance: knownTotal,
   };
 }
 
