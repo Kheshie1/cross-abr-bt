@@ -159,6 +159,7 @@ async function placeKalshiOrder(
 const CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
 const NEG_RISK_CTF_EXCHANGE = "0xC5d563A36AE78145C45a50134d48A1215220f80a";
 const KNOWN_WALLET = "0xb34ff4C3134eb683F7fA8f1E090d567e13bEC7D2";
+const KNOWN_WALLET_2 = "0x2F736345aC40441Bd4b28f896d122c954f09BA11";
 
 const ORDER_TYPES = {
   Order: [
@@ -329,20 +330,22 @@ async function fetchOnChainUSDC(walletAddress: string): Promise<number> {
   return parseInt(json.result || "0x0", 16) / 1e6;
 }
 
-// Fetch combined USDC cash: EOA L2 balance + KNOWN_WALLET on-chain balance
+// Fetch combined USDC cash: EOA L2 balance + KNOWN_WALLET + KNOWN_WALLET_2 on-chain balance
 async function fetchTotalCashBalance(privateKey: string): Promise<{ balance: number; allowance: number; eoaBalance: number; knownWalletBalance: number }> {
-  const [l2Bal, knownBal] = await Promise.allSettled([
+  const [l2Bal, knownBal, known2Bal] = await Promise.allSettled([
     fetchCashBalance(privateKey),
     fetchOnChainUSDC(KNOWN_WALLET),
+    fetchOnChainUSDC(KNOWN_WALLET_2),
   ]);
   const eoa = l2Bal.status === "fulfilled" ? l2Bal.value : { balance: 0, allowance: 0 };
   const known = knownBal.status === "fulfilled" ? knownBal.value : 0;
-  console.log(`Cash breakdown: EOA=$${eoa.balance.toFixed(2)}, KNOWN_WALLET=$${known.toFixed(2)}`);
+  const known2 = known2Bal.status === "fulfilled" ? known2Bal.value : 0;
+  console.log(`Cash breakdown: EOA=$${eoa.balance.toFixed(2)}, KNOWN_WALLET=$${known.toFixed(2)}, KNOWN_WALLET_2=$${known2.toFixed(2)}`);
   return {
-    balance: eoa.balance + known,
+    balance: eoa.balance + known + known2,
     allowance: eoa.allowance,
     eoaBalance: eoa.balance,
-    knownWalletBalance: known,
+    knownWalletBalance: known + known2,
   };
 }
 
@@ -873,7 +876,7 @@ Deno.serve(async (req) => {
         // Step 1: Derive proxy wallets + known user wallet
         const proxyAddress = deriveProxyAddress(eoaAddress);
         const safeAddress = deriveSafeAddress(eoaAddress);
-        const allAddresses = [eoaAddress, proxyAddress, safeAddress, KNOWN_WALLET].filter((a, i, arr) => a && a !== "" && arr.indexOf(a) === i);
+        const allAddresses = [eoaAddress, proxyAddress, safeAddress, KNOWN_WALLET, KNOWN_WALLET_2].filter((a, i, arr) => a && a !== "" && arr.indexOf(a) === i);
         console.log(`EOA: ${eoaAddress}, Proxy: ${proxyAddress}, Safe: ${safeAddress}`);
 
         // Step 2: Fetch cash balance + positions for ALL derived addresses
@@ -1177,7 +1180,7 @@ Deno.serve(async (req) => {
       const eoaAddress = wallet.address;
       const proxyAddress = deriveProxyAddress(eoaAddress);
       const safeAddress = deriveSafeAddress(eoaAddress);
-      const allAddresses = [eoaAddress, proxyAddress, safeAddress, KNOWN_WALLET].filter((a, i, arr) => a && a !== "" && arr.indexOf(a) === i);
+      const allAddresses = [eoaAddress, proxyAddress, safeAddress, KNOWN_WALLET, KNOWN_WALLET_2].filter((a, i, arr) => a && a !== "" && arr.indexOf(a) === i);
 
       const positionPromises = allAddresses.map(addr =>
         fetch(`https://data-api.polymarket.com/positions?user=${addr}`)
