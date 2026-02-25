@@ -9,18 +9,18 @@ export function BalanceCard() {
   const { data, isLoading } = useBalance();
   const qc = useQueryClient();
 
-  const polyBal = data?.balances?.polymarket;
+  const kalshiBal = data?.balances?.kalshi;
   const positions = data?.positions || [];
   const portfolio = data?.portfolio;
 
-  const totalValue = (polyBal?.balance || 0) + (polyBal?.portfolioValue || 0);
+  const totalValue = (kalshiBal?.balance || 0) + (kalshiBal?.portfolio_value || 0);
 
   return (
     <Card className="bg-card border-border">
       <CardHeader className="flex flex-row items-center justify-between pb-2">
         <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
           <Wallet className="h-4 w-4" />
-          Polymarket Account
+          Kalshi Account
         </CardTitle>
         <Button
           variant="ghost"
@@ -37,13 +37,13 @@ export function BalanceCard() {
           <div className="rounded-lg bg-muted/50 px-3 py-2 text-center">
             <p className="text-[10px] text-muted-foreground">Cash</p>
             <p className="text-sm font-bold text-foreground">
-              {isLoading ? "…" : `$${(polyBal?.balance || 0).toFixed(2)}`}
+              {isLoading ? "…" : `$${(kalshiBal?.balance || 0).toFixed(2)}`}
             </p>
           </div>
           <div className="rounded-lg bg-muted/50 px-3 py-2 text-center">
-            <p className="text-[10px] text-muted-foreground">Positions</p>
+            <p className="text-[10px] text-muted-foreground">Portfolio</p>
             <p className="text-sm font-bold text-foreground">
-              {isLoading ? "…" : `$${(polyBal?.portfolioValue || 0).toFixed(2)}`}
+              {isLoading ? "…" : `$${(kalshiBal?.portfolio_value || 0).toFixed(2)}`}
             </p>
           </div>
           <div className="rounded-lg bg-muted/50 px-3 py-2 text-center">
@@ -58,7 +58,7 @@ export function BalanceCard() {
         {positions.length > 0 && (
           <div>
             <p className="mb-1 text-xs font-medium text-muted-foreground">
-              Open Positions ({polyBal?.positionCount || positions.length})
+              Open Positions ({positions.length})
             </p>
             <ScrollArea className="h-[180px]">
               <div className="space-y-1.5">
