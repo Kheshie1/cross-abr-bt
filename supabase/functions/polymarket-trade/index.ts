@@ -1158,19 +1158,21 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Step 1: Fetch real USDC cash balance for sizing (EOA + KNOWN_WALLET combined)
+      // Step 1: Fetch Kalshi balance for trade sizing
+      const MIN_BALANCE_FLOOR = 15.00; // Never let balance go below $15
       let cashBalance = 0;
       try {
-        const bal = await fetchTotalCashBalance(privateKey);
-        cashBalance = bal.balance;
-        console.log(`Auto-trade: cash balance = $${cashBalance.toFixed(2)} (EOA=$${bal.eoaBalance.toFixed(2)}, Known=$${bal.knownWalletBalance.toFixed(2)})`);
+        const kalshiBal = await fetchKalshiBalance();
+        cashBalance = kalshiBal.balance;
+        console.log(`Auto-trade: Kalshi cash = $${cashBalance.toFixed(2)}`);
       } catch (e) {
-        console.error("Failed to fetch balance:", e);
+        console.error("Failed to fetch Kalshi balance:", e);
       }
 
-      if (cashBalance < 0.10) {
-        console.log(`Auto-trade: skipped — insufficient cash ($${cashBalance.toFixed(2)})`);
-        return new Response(JSON.stringify({ skipped: true, reason: `Insufficient cash balance: $${cashBalance.toFixed(2)}` }), {
+      const availableCash = Math.max(0, cashBalance - MIN_BALANCE_FLOOR);
+      if (availableCash < 0.50) {
+        console.log(`Auto-trade: skipped — available cash after $${MIN_BALANCE_FLOOR} floor = $${availableCash.toFixed(2)} (total: $${cashBalance.toFixed(2)})`);
+        return new Response(JSON.stringify({ skipped: true, reason: `Balance too close to $${MIN_BALANCE_FLOOR} floor (available: $${availableCash.toFixed(2)})` }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
@@ -1209,21 +1211,21 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Step 3: Calculate per-trade size from balance
+      // Step 3: Calculate per-trade size from available balance (above $15 floor)
       const slotsAvailable = settings.max_open_trades - openPositions;
       const perTradeSize = Math.min(
-        Math.floor(cashBalance / Math.min(slotsAvailable, 3) * 100) / 100, // spread across up to 3 slots
-        cashBalance * 0.5 // never use more than 50% on a single trade
+        Math.floor(availableCash / Math.min(slotsAvailable, 3) * 100) / 100,
+        availableCash * 0.5 // never use more than 50% of available on a single trade
       );
 
-      if (perTradeSize < 0.10) {
+      if (perTradeSize < 0.50) {
         console.log(`Auto-trade: trade size too small ($${perTradeSize.toFixed(2)})`);
         return new Response(JSON.stringify({ skipped: true, reason: `Trade size too small: $${perTradeSize.toFixed(2)}` }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      console.log(`Auto-trade: sizing $${perTradeSize.toFixed(2)}/trade (${slotsAvailable} slots, $${cashBalance.toFixed(2)} cash)`);
+      console.log(`Auto-trade: sizing $${perTradeSize.toFixed(2)}/trade (${slotsAvailable} slots, $${availableCash.toFixed(2)} available, $${cashBalance.toFixed(2)} total)`);
 
       // Step 4: Find arbs
       const [polymarkets, kalshiMarkets] = await Promise.all([
@@ -1283,19 +1285,19 @@ Deno.serve(async (req) => {
               privateKey,
               polyTokenId,
               polyPrice,
-              perTradeSize / polyPrice, // shares = USDC / price
+              perTradeSize / polyPrice,
               "BUY",
-              true // neg risk (most markets)
+              true
             );
             orderStatus = "live";
-            console.log(`✅ REAL order placed: ${arb.poly_market.question} @ $${polyPrice} | order: ${JSON.stringify(polyOrderResult).slice(0, 200)}`);
+            console.log(`✅ LIVE Poly order: ${arb.poly_market.question} @ $${polyPrice}`);
           } catch (orderErr) {
-            console.error(`⚠️ Real order failed, recording as simulated: ${orderErr}`);
-            orderStatus = "simulated";
+            console.error(`❌ Poly order failed, skipping this arb: ${orderErr}`);
+            continue; // Skip — no simulations
           }
         } else {
-          orderStatus = "simulated";
-          console.log(`⚠️ No token ID for Poly leg, recording as simulated`);
+          console.log(`❌ No token ID for Poly leg, skipping`);
+          continue; // Skip — no simulations
         }
 
         // Try to place real order on Kalshi leg
@@ -1310,16 +1312,19 @@ Deno.serve(async (req) => {
             const kalshiResult = await placeKalshiOrder(
               kalshiTicker,
               isKalshiNo ? "no" : "yes",
-              isKalshiNo ? (1 - kalshiPrice) : kalshiPrice, // yes_price for the API
+              isKalshiNo ? (1 - kalshiPrice) : kalshiPrice,
               perTradeSize,
             );
             kalshiLegStatus = "live";
             kalshiOrderId = kalshiResult?.order_id || kalshiResult?.id || null;
-            console.log(`✅ Kalshi order: ${kalshiTicker} | ${kalshiLegStatus}`);
+            console.log(`✅ LIVE Kalshi order: ${kalshiTicker}`);
           } catch (kalshiErr) {
-            console.error(`⚠️ Kalshi order failed: ${kalshiErr}`);
-            kalshiLegStatus = "simulated";
+            console.error(`❌ Kalshi order failed, skipping this arb: ${kalshiErr}`);
+            continue; // Skip — no simulations
           }
+        } else {
+          console.log(`❌ No Kalshi ticker, skipping`);
+          continue; // Skip — no simulations
         }
 
         executionResults.push({ question: arb.poly_market.question, spread: arb.spread_pct, status: orderStatus, kalshiStatus: kalshiLegStatus, orderId: polyOrderResult?.orderID });
