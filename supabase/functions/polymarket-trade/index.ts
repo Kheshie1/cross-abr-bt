@@ -1498,6 +1498,86 @@ Deno.serve(async (req) => {
         );
       }
 
+      // If all cross-platform orders failed, fall back to Kalshi-only
+      if (allInserts.length === 0) {
+        console.log(`Auto-trade: all cross-platform orders failed, falling back to Kalshi internal arbs...`);
+        const kalshiArbs = findKalshiInternalArbs(kalshiMarkets);
+        console.log(`Auto-trade: ${kalshiArbs.length} Kalshi internal arbs found`);
+
+        const kalshiNew = kalshiArbs.filter(a => {
+          if (tradedMarketIds.has(a.market.id)) return false;
+          if (tradedQuestions.has(normalize(a.market.question))) return false;
+          return true;
+        });
+
+        const kalshiToExecute = kalshiNew.slice(0, Math.min(slotsAvailable, 3));
+        const kalshiInserts = [];
+        const kalshiResults = [];
+
+        for (const arb of kalshiToExecute) {
+          const ticker = arb.market.ticker;
+          if (!ticker) continue;
+
+          const currentBal = await fetchKalshiBalance();
+          const currentAvailable = Math.max(0, currentBal.balance - MIN_BALANCE_FLOOR);
+          const tradeSize = Math.min(perTradeSize, currentAvailable * 0.5);
+          if (tradeSize < 0.50) {
+            console.log(`Auto-trade: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
+            break;
+          }
+
+          let yesOrderId: string | null = null;
+          try {
+            const yesResult = await placeKalshiOrder(ticker, "yes", arb.yes_price, tradeSize);
+            yesOrderId = yesResult?.order_id || yesResult?.id || null;
+            console.log(`✅ Kalshi YES: ${ticker} @ ${(arb.yes_price * 100).toFixed(0)}¢`);
+          } catch (e) {
+            console.error(`❌ Kalshi YES failed: ${e}`);
+            continue;
+          }
+
+          let noOrderId: string | null = null;
+          try {
+            const noResult = await placeKalshiOrder(ticker, "no", 1 - arb.no_price, tradeSize);
+            noOrderId = noResult?.order_id || noResult?.id || null;
+            console.log(`✅ Kalshi NO: ${ticker} @ ${(arb.no_price * 100).toFixed(0)}¢`);
+          } catch (e) {
+            console.error(`❌ Kalshi NO failed: ${e}`);
+          }
+
+          const arbProfit = arb.guaranteed_profit * tradeSize;
+          kalshiResults.push({ question: arb.market.question, spread: arb.spread_pct, ticker });
+
+          kalshiInserts.push(
+            {
+              market_id: arb.market.id, market_question: arb.market.question,
+              token_id: ticker, side: "BUY_YES@KALSHI", price: arb.yes_price,
+              size: tradeSize, status: "live", order_id: yesOrderId,
+              profit_loss: arbProfit, resolved_at: arb.market.end_date || null,
+            },
+            {
+              market_id: arb.market.id, market_question: arb.market.question,
+              token_id: ticker, side: "BUY_NO@KALSHI", price: arb.no_price,
+              size: tradeSize, status: noOrderId ? "live" : "failed", order_id: noOrderId,
+              profit_loss: 0, resolved_at: arb.market.end_date || null,
+            }
+          );
+        }
+
+        if (kalshiInserts.length > 0) {
+          const { data: trades, error: tradeErr } = await supabase
+            .from("polymarket_trades").insert(kalshiInserts).select();
+          if (tradeErr) throw tradeErr;
+          return new Response(JSON.stringify({ executed: true, strategy: "kalshi_internal_fallback", count: kalshiResults.length, trades, results: kalshiResults }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        return new Response(JSON.stringify({ skipped: true, reason: "All cross-platform failed, no Kalshi internal arbs available" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
       const { data: trades, error: tradeErr } = await supabase
         .from("polymarket_trades")
         .insert(allInserts)
