@@ -1,0 +1,1 @@
+DELETE FROM polymarket_trades WHERE status IN ('simulated', 'executed');
