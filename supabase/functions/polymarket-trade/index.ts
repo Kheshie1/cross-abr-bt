@@ -704,12 +704,13 @@ async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
       const noBid = m.no_bid ?? 0;
       const noAsk = m.no_ask ?? 0;
 
-      // Use ask for buying (worst case for us = conservative arb)
+      // Use ask for buying (worst case for us = conservative)
+      // For NO side: use no_ask if available, otherwise derive from yes_bid
       const yesPrice = yesAsk > 0 ? yesAsk : (m.last_price ?? 0);
-      const noPrice = noAsk > 0 ? noAsk : (100 - (m.last_price ?? 50));
+      const noPrice = noAsk > 0 ? noAsk : (noBid > 0 ? noBid : (100 - (yesAsk > 0 ? yesAsk : (m.last_price ?? 50))));
 
       if (yesPrice <= 0 || noPrice <= 0) continue;
-      if (yesPrice >= 99 || noPrice >= 99) continue; // Skip illiquid extremes
+      if (yesPrice >= 99 || noPrice >= 99) continue;
 
       allMarkets.push({
         id: m.ticker || "",
@@ -870,6 +871,173 @@ function findKalshiInternalArbs(markets: MarketData[]): KalshiInternalArb[] {
     }
   }
   return arbs.sort((a, b) => b.spread_pct - a.spread_pct);
+}
+
+// ──────────── KALSHI VALUE BETTING ────────────
+
+interface KalshiValueBet {
+  market: MarketData;
+  side: "yes" | "no";
+  price: number;
+  edge: number;
+  hoursLeft: number;
+}
+
+function findKalshiValueBets(markets: MarketData[], maxHours = 720): KalshiValueBet[] {  // 30 days
+  const now = Date.now();
+  const bets: KalshiValueBet[] = [];
+  let checked = 0, timeFiltered = 0;
+
+  // Debug: log price distribution
+  const yesUnder20 = markets.filter(m => m.yes_price <= 0.20).length;
+  const noUnder20 = markets.filter(m => m.no_price <= 0.20).length;
+  const withEndDate = markets.filter(m => !!m.end_date).length;
+  const withTicker = markets.filter(m => !!m.ticker).length;
+  console.log(`Value debug: ${markets.length} markets, ${withEndDate} with end_date, ${withTicker} with ticker, ${yesUnder20} yes≤20¢, ${noUnder20} no≤20¢`);
+
+  // Log some sample end dates for debugging
+  const samplesWithEnd = markets.filter(m => m.end_date).slice(0, 3);
+  for (const s of samplesWithEnd) {
+    const msLeft = new Date(s.end_date!).getTime() - now;
+    const h = msLeft / (1000 * 60 * 60);
+    console.log(`Sample: ${s.ticker} end=${s.end_date} hoursLeft=${h.toFixed(1)} yes=${s.yes_price} no=${s.no_price}`);
+  }
+
+  for (const m of markets) {
+    if (!m.end_date || !m.ticker) continue;
+    checked++;
+    const msLeft = new Date(m.end_date).getTime() - now;
+    const hoursLeft = msLeft / (1000 * 60 * 60);
+    if (hoursLeft < 0.25 || hoursLeft > maxHours) { timeFiltered++; continue; }
+
+    // Buy NO when YES is cheap (≤20¢ = event unlikely, NO should pay $1)
+    if (m.yes_price <= 0.20 && m.no_price > 0 && m.no_price <= 0.97) {
+      const edge = ((1 - m.no_price) / m.no_price) * 100;
+      if (edge >= 1) {
+        bets.push({ market: m, side: "no", price: m.no_price, edge: Number(edge.toFixed(2)), hoursLeft: Number(hoursLeft.toFixed(1)) });
+      }
+    }
+
+    // Buy YES when NO is cheap (≤20¢ = event likely, YES should pay $1)
+    if (m.no_price <= 0.20 && m.yes_price > 0 && m.yes_price <= 0.97) {
+      const edge = ((1 - m.yes_price) / m.yes_price) * 100;
+      if (edge >= 1) {
+        bets.push({ market: m, side: "yes", price: m.yes_price, edge: Number(edge.toFixed(2)), hoursLeft: Number(hoursLeft.toFixed(1)) });
+      }
+    }
+  }
+
+  // Deduplicate by ticker+side
+  const seen = new Map<string, KalshiValueBet>();
+  for (const b of bets) {
+    const key = `${b.market.ticker}-${b.side}`;
+    if (!seen.has(key) || seen.get(key)!.edge < b.edge) seen.set(key, b);
+  }
+
+  console.log(`Value scan: ${checked} checked, ${timeFiltered} time-filtered, ${bets.length} candidates`);
+
+  return Array.from(seen.values()).sort((a, b) => {
+    return (b.edge / Math.max(b.hoursLeft, 0.5)) - (a.edge / Math.max(a.hoursLeft, 0.5));
+  });
+}
+
+// ──────────── VALUE BET EXECUTOR ────────────
+
+async function executeValueBets(
+  supabase: any,
+  kalshiMarkets: MarketData[],
+  maxPerTrade: number,
+  minFloor: number,
+  slotsAvailable: number,
+  tradedMarketIds: Set<string>,
+  tradedQuestions: Set<string>,
+): Promise<Response> {
+  const valueBets = findKalshiValueBets(kalshiMarkets); // uses default 720h (30 days)
+  console.log(`Value betting: ${valueBets.length} candidates found`);
+
+  if (valueBets.length === 0) {
+    return new Response(JSON.stringify({ skipped: true, reason: "No value bets available" }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  // Filter out already-traded markets
+  const newBets = valueBets.filter(b => {
+    if (tradedMarketIds.has(b.market.id)) return false;
+    if (tradedQuestions.has(normalize(b.market.question))) return false;
+    return true;
+  });
+
+  const toPlace = newBets.slice(0, Math.min(slotsAvailable, 3));
+
+  if (toPlace.length === 0) {
+    return new Response(JSON.stringify({ skipped: true, reason: "No new value bets (all already traded)" }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  const inserts = [];
+  const results = [];
+
+  for (const bet of toPlace) {
+    const ticker = bet.market.ticker;
+    if (!ticker) continue;
+
+    // Re-check balance
+    const currentBal = await fetchKalshiBalance();
+    const currentAvailable = Math.max(0, currentBal.balance - minFloor);
+    // For value bets, use smaller sizing (more conservative)
+    const tradeSize = Math.min(maxPerTrade * 0.5, currentAvailable * 0.25);
+    if (tradeSize < 0.50) {
+      console.log(`Value bet: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
+      break;
+    }
+
+    try {
+      const yesPrice = bet.side === "yes" ? bet.price : (1 - bet.price);
+      const orderResult = await placeKalshiOrder(ticker, bet.side, yesPrice, tradeSize);
+      const orderId = orderResult?.order_id || orderResult?.id || null;
+      console.log(`✅ Value bet: ${ticker} ${bet.side.toUpperCase()} @ ${(bet.price * 100).toFixed(0)}¢ | edge: ${bet.edge}% | resolves in ${bet.hoursLeft}h`);
+
+      results.push({ question: bet.market.question, side: bet.side, price: bet.price, edge: bet.edge, hoursLeft: bet.hoursLeft, ticker });
+
+      inserts.push({
+        market_id: bet.market.id,
+        market_question: bet.market.question,
+        token_id: ticker,
+        side: `BUY_${bet.side.toUpperCase()}@KALSHI`,
+        price: bet.price,
+        size: tradeSize,
+        status: "live",
+        order_id: orderId,
+        profit_loss: 0, // unknown until resolution
+        resolved_at: bet.market.end_date || null,
+      });
+    } catch (e) {
+      console.error(`❌ Value bet failed (${ticker}): ${e}`);
+      continue;
+    }
+  }
+
+  if (inserts.length > 0) {
+    const { data: trades, error: tradeErr } = await supabase
+      .from("polymarket_trades").insert(inserts).select();
+    if (tradeErr) throw tradeErr;
+
+    return new Response(JSON.stringify({
+      executed: true,
+      strategy: "kalshi_value_bet",
+      count: results.length,
+      trades,
+      results,
+    }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  return new Response(JSON.stringify({ skipped: true, reason: "Value bet orders all failed" }), {
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
 }
 
 // ──────────── MAIN HANDLER ────────────
@@ -1303,9 +1471,7 @@ Deno.serve(async (req) => {
         const kalshiToExecute = kalshiNew.slice(0, Math.min(slotsAvailable, 3));
 
         if (kalshiToExecute.length === 0) {
-          return new Response(JSON.stringify({ skipped: true, reason: "No new arbs (cross-platform or Kalshi-only)" }), {
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
+          return await executeValueBets(supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR, slotsAvailable, tradedMarketIds, tradedQuestions);
         }
 
         const kalshiInserts = [];
@@ -1399,9 +1565,8 @@ Deno.serve(async (req) => {
           });
         }
 
-        return new Response(JSON.stringify({ skipped: true, reason: "No executable Kalshi arbs" }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        // Try value betting as final fallback
+        return await executeValueBets(supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR, slotsAvailable, tradedMarketIds, tradedQuestions);
       }
 
       // Step 5: Execute real orders on Polymarket + record in DB
@@ -1573,9 +1738,8 @@ Deno.serve(async (req) => {
           });
         }
 
-        return new Response(JSON.stringify({ skipped: true, reason: "All cross-platform failed, no Kalshi internal arbs available" }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        // Try value betting as final fallback
+        return await executeValueBets(supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR, slotsAvailable, tradedMarketIds, tradedQuestions);
       }
 
       const { data: trades, error: tradeErr } = await supabase
