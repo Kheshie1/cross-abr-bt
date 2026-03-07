@@ -123,8 +123,9 @@ async function placeKalshiOrder(
 
   // Kalshi prices are in cents (1-99)
   const priceCents = Math.round(yesPrice * 100);
-  // Count = number of contracts. Each contract pays $1. cost = count * price_cents / 100
-  const count = Math.max(1, Math.round(sizeUsd / (priceCents / 100)));
+  // Cost per contract = price in dollars. count * (priceCents/100) = total cost
+  const costPerContract = priceCents / 100;
+  const count = Math.max(1, Math.floor(sizeUsd / costPerContract));
   const clientOrderId = crypto.randomUUID();
 
   const body = {
