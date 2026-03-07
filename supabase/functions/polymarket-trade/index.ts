@@ -883,7 +883,7 @@ interface KalshiValueBet {
   hoursLeft: number;
 }
 
-function findKalshiValueBets(markets: MarketData[], maxHours = 720): KalshiValueBet[] {  // 30 days
+function findKalshiValueBets(markets: MarketData[], maxHours = 168): KalshiValueBet[] {  // 7 days — tighter for faster resolution
   const now = Date.now();
   const bets: KalshiValueBet[] = [];
   let checked = 0, timeFiltered = 0;
@@ -986,8 +986,8 @@ async function executeValueBets(
     // Re-check balance
     const currentBal = await fetchKalshiBalance();
     const currentAvailable = Math.max(0, currentBal.balance - minFloor);
-    // For value bets, use smaller sizing (more conservative)
-    const tradeSize = Math.min(maxPerTrade * 0.5, currentAvailable * 0.25);
+    // Aggressive value bet sizing
+    const tradeSize = Math.min(maxPerTrade, currentAvailable * 0.6);
     if (tradeSize < 0.50) {
       console.log(`Value bet: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
       break;
@@ -1357,7 +1357,7 @@ Deno.serve(async (req) => {
       }
 
       // Step 1: Fetch Kalshi balance for trade sizing
-      const MIN_BALANCE_FLOOR = 15.00; // Never let balance go below $15
+      const MIN_BALANCE_FLOOR = 1.00; // Aggressive mode — keep only $1 reserve
       let cashBalance = 0;
       try {
         const kalshiBal = await fetchKalshiBalance();
@@ -1413,7 +1413,7 @@ Deno.serve(async (req) => {
       const slotsAvailable = settings.max_open_trades - openPositions;
       const perTradeSize = Math.min(
         Math.floor(availableCash / Math.min(slotsAvailable, 3) * 100) / 100,
-        availableCash * 0.5 // never use more than 50% of available on a single trade
+        availableCash * 0.75 // aggressive: use up to 75% of available on a single trade
       );
 
       if (perTradeSize < 0.50) {
@@ -1434,7 +1434,7 @@ Deno.serve(async (req) => {
       const minSpread = (1 - settings.min_confidence) * 100;
       const now = Date.now();
       const MIN_MS = 100;                  // 0.1 second
-      const MAX_MS = 2 * 60 * 60 * 1000;   // 2 hours
+      const MAX_MS = 72 * 60 * 60 * 1000;  // 72 hours — wider window for more opportunities
 
       const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.2)
         .filter((a) => {
