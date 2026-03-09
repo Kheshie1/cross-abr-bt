@@ -1358,7 +1358,7 @@ Deno.serve(async (req) => {
       }
 
       // Step 1: Fetch Kalshi balance for trade sizing
-      const MIN_BALANCE_FLOOR = 1.00; // Aggressive mode — keep only $1 reserve
+      const MIN_BALANCE_FLOOR = 0; // No reserve — use every cent
       let cashBalance = 0;
       try {
         const kalshiBal = await fetchKalshiBalance();
