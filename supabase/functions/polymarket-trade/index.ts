@@ -1417,7 +1417,7 @@ Deno.serve(async (req) => {
         availableCash * 0.75 // aggressive: use up to 75% of available on a single trade
       );
 
-      if (perTradeSize < 0.50) {
+      if (perTradeSize < 0.10) {
         console.log(`Auto-trade: trade size too small ($${perTradeSize.toFixed(2)})`);
         return new Response(JSON.stringify({ skipped: true, reason: `Trade size too small: $${perTradeSize.toFixed(2)}` }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
