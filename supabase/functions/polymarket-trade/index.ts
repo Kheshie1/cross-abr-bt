@@ -989,7 +989,7 @@ async function executeValueBets(
     const currentAvailable = Math.max(0, currentBal.balance - minFloor);
     // Aggressive value bet sizing
     const tradeSize = Math.min(maxPerTrade, currentAvailable * 0.6);
-    if (tradeSize < 0.50) {
+    if (tradeSize < 0.10) {
       console.log(`Value bet: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
       break;
     }
