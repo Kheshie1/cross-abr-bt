@@ -1687,7 +1687,7 @@ Deno.serve(async (req) => {
           const currentBal = await fetchKalshiBalance();
           const currentAvailable = Math.max(0, currentBal.balance - MIN_BALANCE_FLOOR);
           const tradeSize = Math.min(perTradeSize, currentAvailable * 0.5);
-          if (tradeSize < 0.50) {
+          if (tradeSize < 0.10) {
             console.log(`Auto-trade: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
             break;
           }
