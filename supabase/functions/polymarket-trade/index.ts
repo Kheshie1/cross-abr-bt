@@ -1369,7 +1369,7 @@ Deno.serve(async (req) => {
       }
 
       const availableCash = Math.max(0, cashBalance - MIN_BALANCE_FLOOR);
-      if (availableCash < 0.50) {
+      if (availableCash < 0.10) {
         console.log(`Auto-trade: skipped — available cash after $${MIN_BALANCE_FLOOR} floor = $${availableCash.toFixed(2)} (total: $${cashBalance.toFixed(2)})`);
         return new Response(JSON.stringify({ skipped: true, reason: `Balance too close to $${MIN_BALANCE_FLOOR} floor (available: $${availableCash.toFixed(2)})` }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
