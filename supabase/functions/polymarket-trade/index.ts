@@ -989,7 +989,7 @@ async function executeValueBets(
     const currentAvailable = Math.max(0, currentBal.balance - minFloor);
     // Aggressive value bet sizing
     const tradeSize = Math.min(maxPerTrade, currentAvailable * 0.6);
-    if (tradeSize < 0.50) {
+    if (tradeSize < 0.10) {
       console.log(`Value bet: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
       break;
     }
@@ -1358,7 +1358,7 @@ Deno.serve(async (req) => {
       }
 
       // Step 1: Fetch Kalshi balance for trade sizing
-      const MIN_BALANCE_FLOOR = 1.00; // Aggressive mode — keep only $1 reserve
+      const MIN_BALANCE_FLOOR = 0; // No reserve — use every cent
       let cashBalance = 0;
       try {
         const kalshiBal = await fetchKalshiBalance();
@@ -1369,7 +1369,7 @@ Deno.serve(async (req) => {
       }
 
       const availableCash = Math.max(0, cashBalance - MIN_BALANCE_FLOOR);
-      if (availableCash < 0.50) {
+      if (availableCash < 0.10) {
         console.log(`Auto-trade: skipped — available cash after $${MIN_BALANCE_FLOOR} floor = $${availableCash.toFixed(2)} (total: $${cashBalance.toFixed(2)})`);
         return new Response(JSON.stringify({ skipped: true, reason: `Balance too close to $${MIN_BALANCE_FLOOR} floor (available: $${availableCash.toFixed(2)})` }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -1417,7 +1417,7 @@ Deno.serve(async (req) => {
         availableCash * 0.75 // aggressive: use up to 75% of available on a single trade
       );
 
-      if (perTradeSize < 0.50) {
+      if (perTradeSize < 0.10) {
         console.log(`Auto-trade: trade size too small ($${perTradeSize.toFixed(2)})`);
         return new Response(JSON.stringify({ skipped: true, reason: `Trade size too small: $${perTradeSize.toFixed(2)}` }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -1486,7 +1486,7 @@ Deno.serve(async (req) => {
           const currentBal = await fetchKalshiBalance();
           const currentAvailable = Math.max(0, currentBal.balance - MIN_BALANCE_FLOOR);
           const tradeSize = Math.min(perTradeSize, currentAvailable * 0.5);
-          if (tradeSize < 0.50) {
+           if (tradeSize < 0.10) {
             console.log(`Auto-trade: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
             break;
           }
@@ -1687,7 +1687,7 @@ Deno.serve(async (req) => {
           const currentBal = await fetchKalshiBalance();
           const currentAvailable = Math.max(0, currentBal.balance - MIN_BALANCE_FLOOR);
           const tradeSize = Math.min(perTradeSize, currentAvailable * 0.5);
-          if (tradeSize < 0.50) {
+          if (tradeSize < 0.10) {
             console.log(`Auto-trade: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
             break;
           }
