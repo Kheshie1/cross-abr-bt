@@ -1828,6 +1828,100 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ──── SELL POLYMARKET POSITION ────
+    if (action === "sell_position") {
+      const privateKey = Deno.env.get("POLYMARKET_PRIVATE_KEY");
+      if (!privateKey) throw new Error("No private key configured");
+
+      const { token_id, size: sellSize, price: sellPrice, neg_risk } = body;
+      if (!token_id) throw new Error("token_id required");
+
+      // If no price/size provided, look up from on-chain positions
+      let finalSize = sellSize;
+      let finalPrice = sellPrice;
+
+      if (!finalSize || !finalPrice) {
+        // Fetch positions to find the token
+        const wallet = new Wallet(privateKey);
+        const wallets = [wallet.address, KNOWN_WALLET, KNOWN_WALLET_2];
+        let foundPosition: any = null;
+
+        for (const addr of wallets) {
+          try {
+            const posRes = await proxiedFetch(
+              `${CLOB_URL}/positions?address=${addr}`,
+              { method: "GET", headers: { "Content-Type": "application/json" } }
+            );
+            if (posRes.ok) {
+              const positions = await posRes.json();
+              const match = positions?.find?.((p: any) => p.asset === token_id);
+              if (match && Number(match.size) > 0) {
+                foundPosition = match;
+                break;
+              }
+            }
+          } catch (_) {}
+        }
+
+        if (!foundPosition) throw new Error("Position not found on-chain");
+        if (!finalSize) finalSize = Number(foundPosition.size);
+
+        // Get current market price from orderbook
+        if (!finalPrice) {
+          try {
+            const bookRes = await proxiedFetch(
+              `${CLOB_URL}/book?token_id=${token_id}`,
+              { method: "GET", headers: { "Content-Type": "application/json" } }
+            );
+            if (bookRes.ok) {
+              const book = await bookRes.json();
+              // Best bid is what we can sell at
+              const bestBid = book?.bids?.[0]?.price;
+              if (bestBid) {
+                finalPrice = Number(bestBid);
+              } else {
+                // Fall back to mid price or current price
+                finalPrice = Number(foundPosition.cur_price || foundPosition.avgPrice || 0.25);
+              }
+            }
+          } catch (_) {
+            finalPrice = 0.25; // fallback
+          }
+        }
+      }
+
+      console.log(`📤 SELL: token=${token_id}, size=${finalSize}, price=${finalPrice}`);
+
+      const result = await placePolymarketOrder(
+        privateKey,
+        token_id,
+        finalPrice,
+        finalSize,
+        "SELL",
+        neg_risk !== false, // default true
+      );
+
+      // Record the sell in DB
+      await supabase.from("polymarket_trades").insert({
+        market_id: body.market_id || token_id,
+        market_question: body.market_question || "Manual sell",
+        token_id,
+        side: "SELL@POLYMARKET",
+        price: finalPrice,
+        size: finalSize,
+        status: "live",
+        order_id: result?.orderID || result?.id || null,
+      });
+
+      return new Response(JSON.stringify({
+        success: true,
+        sold: { token_id, size: finalSize, price: finalPrice },
+        result,
+      }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     return new Response(JSON.stringify({ error: "Unknown action" }), {
       status: 400,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
