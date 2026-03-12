@@ -468,7 +468,7 @@ async function placePolymarketOrder(
   tokenId: string,
   price: number,
   size: number,
-  side: "BUY",
+  side: "BUY" | "SELL" = "BUY",
   negRisk: boolean = true,
 ): Promise<any> {
   const wallet = new Wallet(privateKey);
@@ -476,12 +476,20 @@ async function placePolymarketOrder(
 
   // Round price to tick size
   const tickPrice = roundToTick(price);
-  const sideInt = 0; // BUY
+  const sideInt = side === "BUY" ? 0 : 1;
   const signatureType = 0; // EOA
 
   // Amounts in raw units (6 decimals for both USDC and tokens)
-  const makerAmount = String(Math.round(tickPrice * size * 1e6)); // USDC to pay
-  const takerAmount = String(Math.round(size * 1e6)); // tokens to receive
+  let makerAmount: string;
+  let takerAmount: string;
+  if (side === "BUY") {
+    makerAmount = String(Math.round(tickPrice * size * 1e6)); // USDC to pay
+    takerAmount = String(Math.round(size * 1e6)); // tokens to receive
+  } else {
+    // SELL: maker gives tokens, taker gives USDC
+    makerAmount = String(Math.round(size * 1e6)); // tokens to give
+    takerAmount = String(Math.round(tickPrice * size * 1e6)); // USDC to receive
+  }
 
   const salt = String(Math.floor(Math.random() * 1e15));
   const exchangeAddress = negRisk ? NEG_RISK_CTF_EXCHANGE : CTF_EXCHANGE;
@@ -513,7 +521,7 @@ async function placePolymarketOrder(
     method: "POST",
     headers: { ...l2Headers, "Content-Type": "application/json" },
     body: JSON.stringify({
-      order: { ...order, signature, side: "BUY", signatureType },
+      order: { ...order, signature, side, signatureType },
       owner: wallet.address,
       orderType: "GTC",
     }),
@@ -524,7 +532,7 @@ async function placePolymarketOrder(
     throw new Error(`Order failed [${res.status}]: ${JSON.stringify(resData)}`);
   }
 
-  console.log(`✅ Real order placed via proxy: ${tokenId} @ $${tickPrice} × ${size}`);
+  console.log(`✅ ${side} order placed via proxy: ${tokenId} @ $${tickPrice} × ${size}`);
   return resData;
 }
 
