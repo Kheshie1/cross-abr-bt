@@ -1130,6 +1130,7 @@ Deno.serve(async (req) => {
               return {
                 market: p.title || p.market_slug || p.asset || "Unknown",
                 outcome: p.outcome || (p.side === "YES" ? "Yes" : "No"),
+                tokenId: p.asset || null,
                 size,
                 avgPrice: Number(p.avgPrice || p.price || 0),
                 currentPrice,
