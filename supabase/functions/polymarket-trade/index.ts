@@ -994,8 +994,8 @@ async function executeValueBets(
     // Re-check balance
     const currentBal = await fetchKalshiBalance();
     const currentAvailable = Math.max(0, currentBal.balance - minFloor);
-    // Aggressive value bet sizing
-    const tradeSize = Math.min(maxPerTrade, currentAvailable * 0.6);
+    // FULL SEND — use entire available cash
+    const tradeSize = Math.max(0, currentAvailable);
     if (tradeSize < 0.10) {
       console.log(`Value bet: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
       break;
