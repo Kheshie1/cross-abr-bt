@@ -698,7 +698,11 @@ async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
     if (page === 0 && markets.length > 0) {
       const sample = markets[0];
       console.log(`Sample market keys: ${Object.keys(sample).join(", ")}`);
-      console.log(`Sample: ticker=${sample.ticker} yes_bid=${sample.yes_bid} yes_ask=${sample.yes_ask} no_bid=${sample.no_bid} no_ask=${sample.no_ask} last_price=${sample.last_price} yes_price=${sample.yes_price} no_price=${sample.no_price}`);
+      console.log(`Sample: ticker=${sample.ticker} yes_ask_dollars=${sample.yes_ask_dollars} no_ask_dollars=${sample.no_ask_dollars} yes_bid_dollars=${sample.yes_bid_dollars} no_bid_dollars=${sample.no_bid_dollars} last_price_dollars=${sample.last_price_dollars} subtitle=${(sample.subtitle||"").slice(0,40)}`);
+      // Also log a non-MVE market if possible
+      const nonMve = markets.find((x: any) => !x.mve_collection_ticker);
+      if (nonMve) console.log(`Non-MVE: ticker=${nonMve.ticker} yes_ask_dollars=${nonMve.yes_ask_dollars} no_ask_dollars=${nonMve.no_ask_dollars} last_price_dollars=${nonMve.last_price_dollars}`);
+      else console.log(`ALL ${markets.length} markets on page 0 have mve_collection_ticker`);
     }
     for (const m of markets) {
       // ─── SKIP only true parlay/multi-leg markets ───
