@@ -676,6 +676,7 @@ async function fetchPolymarkets(limit = 500): Promise<MarketData[]> {
 async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
   const allMarkets: MarketData[] = [];
   let cursor: string | undefined;
+  let skipType = 0, skipTitle = 0, skipQ = 0, skipPrice = 0;
 
   for (let page = 0; page < maxPages; page++) {
     const params = new URLSearchParams({
@@ -693,8 +694,6 @@ async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
     const markets = data.markets || [];
     cursor = data.cursor;
     console.log(`Kalshi page ${page}: ${markets.length} markets (cursor: ${cursor ? "yes" : "no"})`);
-
-    let skipMve = 0, skipType = 0, skipTitle = 0, skipQ = 0, skipPrice = 0;
     for (const m of markets) {
       // ─── SKIP only true parlay/multi-leg markets ───
       if (m.market_type === "multi_variate") { skipType++; continue; }
