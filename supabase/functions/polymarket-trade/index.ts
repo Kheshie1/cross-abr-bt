@@ -1418,12 +1418,9 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Step 3: Calculate per-trade size from available balance (above $15 floor)
-      const slotsAvailable = settings.max_open_trades - openPositions;
-      const perTradeSize = Math.min(
-        Math.floor(availableCash / Math.min(slotsAvailable, 3) * 100) / 100,
-        availableCash * 0.75 // aggressive: use up to 75% of available on a single trade
-      );
+      // Step 3: FULL SEND — use entire balance on 1 trade
+      const slotsAvailable = 1; // Only 1 trade
+      const perTradeSize = availableCash; // Use 100% of available cash
 
       if (perTradeSize < 0.10) {
         console.log(`Auto-trade: trade size too small ($${perTradeSize.toFixed(2)})`);
