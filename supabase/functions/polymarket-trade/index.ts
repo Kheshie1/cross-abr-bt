@@ -1,5 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { Wallet, utils } from "https://esm.sh/ethers@5.7.2";
+import { Wallet, utils } from "https://esm.sh/ethers@5.7.2?bundle";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -676,12 +676,12 @@ async function fetchPolymarkets(limit = 500): Promise<MarketData[]> {
 async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
   const allMarkets: MarketData[] = [];
   let cursor: string | undefined;
+  let skipType = 0, skipTitle = 0, skipQ = 0, skipPrice = 0;
 
   for (let page = 0; page < maxPages; page++) {
     const params = new URLSearchParams({
       limit: "1000",
       status: "open",
-      mve_filter: "exclude", // Only single binary markets
     });
     if (cursor) params.set("cursor", cursor);
 
@@ -694,32 +694,37 @@ async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
     const markets = data.markets || [];
     cursor = data.cursor;
     console.log(`Kalshi page ${page}: ${markets.length} markets (cursor: ${cursor ? "yes" : "no"})`);
-
+    // Debug: log first market's full structure on page 0
+    if (page === 0 && markets.length > 0) {
+      const sample = markets[0];
+      console.log(`Sample market keys: ${Object.keys(sample).join(", ")}`);
+      console.log(`Sample: ticker=${sample.ticker} yes_ask_dollars=${sample.yes_ask_dollars} no_ask_dollars=${sample.no_ask_dollars} yes_bid_dollars=${sample.yes_bid_dollars} no_bid_dollars=${sample.no_bid_dollars} last_price_dollars=${sample.last_price_dollars} subtitle=${(sample.subtitle||"").slice(0,40)}`);
+      // Also log a non-MVE market if possible
+      const nonMve = markets.find((x: any) => !x.mve_collection_ticker);
+      if (nonMve) console.log(`Non-MVE: ticker=${nonMve.ticker} yes_ask_dollars=${nonMve.yes_ask_dollars} no_ask_dollars=${nonMve.no_ask_dollars} last_price_dollars=${nonMve.last_price_dollars}`);
+      else console.log(`ALL ${markets.length} markets on page 0 have mve_collection_ticker`);
+    }
     for (const m of markets) {
-      // ─── SKIP MVE / parlay markets (multi-leg combos) ───
-      if (m.mve_collection_ticker) continue;
-      if (m.market_type === "multi_variate") continue;
-      const title = m.title || "";
-      // MVE titles look like "yes Team1,yes Team2,no Team3"
-      if (/^(yes|no) .+,(yes|no) /i.test(title)) continue;
+      // ─── SKIP only true parlay/multi-leg markets ───
+      if (m.market_type === "multi_variate") { skipType++; continue; }
 
       // ─── Use subtitle as primary (cleaner question format) ───
       const question = m.subtitle || m.title || m.yes_sub_title || "";
-      if (question.length < 5) continue;
+      if (question.length < 5) { skipQ++; continue; }
 
-      // ─── Price: use midpoint of bid/ask for accuracy ───
-      const yesBid = m.yes_bid ?? 0;
-      const yesAsk = m.yes_ask ?? 0;
-      const noBid = m.no_bid ?? 0;
-      const noAsk = m.no_ask ?? 0;
+      // ─── Price: Kalshi V2 uses _dollars suffix (decimal values 0-1) ───
+      const yesAsk = m.yes_ask_dollars ?? m.yes_ask ?? 0;
+      const noAsk = m.no_ask_dollars ?? m.no_ask ?? 0;
+      const yesBid = m.yes_bid_dollars ?? m.yes_bid ?? 0;
+      const noBid = m.no_bid_dollars ?? m.no_bid ?? 0;
+      const lastPrice = m.last_price_dollars ?? m.last_price ?? 0;
 
-      // Use ask for buying (worst case for us = conservative)
-      // For NO side: use no_ask if available, otherwise derive from yes_bid
-      const yesPrice = yesAsk > 0 ? yesAsk : (m.last_price ?? 0);
-      const noPrice = noAsk > 0 ? noAsk : (noBid > 0 ? noBid : (100 - (yesAsk > 0 ? yesAsk : (m.last_price ?? 50))));
+      // Prices are already in dollar format (0.xx), convert to cents for compatibility
+      const yesPrice = (yesAsk > 0 ? yesAsk : lastPrice) * 100;
+      const noPrice = (noAsk > 0 ? noAsk : (noBid > 0 ? noBid : (1 - (yesAsk > 0 ? yesAsk : (lastPrice || 0.5))))) * 100;
 
-      if (yesPrice <= 0 || noPrice <= 0) continue;
-      if (yesPrice >= 99 || noPrice >= 99) continue;
+      if (yesPrice <= 0 || noPrice <= 0) { skipPrice++; continue; }
+      if (yesPrice >= 99 || noPrice >= 99) { skipPrice++; continue; }
 
       allMarkets.push({
         id: m.ticker || "",
@@ -737,6 +742,7 @@ async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
     if (!cursor || markets.length < 1000) break;
   }
 
+  console.log(`Kalshi filter stats: type=${skipType}, question=${skipQ}, price=${skipPrice}`);
   console.log(`Kalshi: ${allMarkets.length} single-binary markets after filtering`);
   return allMarkets;
 }
@@ -892,17 +898,17 @@ interface KalshiValueBet {
   hoursLeft: number;
 }
 
-function findKalshiValueBets(markets: MarketData[], maxHours = 168): KalshiValueBet[] {  // 7 days — tighter for faster resolution
+function findKalshiValueBets(markets: MarketData[], maxHours = 720): KalshiValueBet[] {  // 30 days — expanded for more opportunities
   const now = Date.now();
   const bets: KalshiValueBet[] = [];
   let checked = 0, timeFiltered = 0;
 
-  // Debug: log price distribution
-  const yesUnder20 = markets.filter(m => m.yes_price <= 0.20).length;
-  const noUnder20 = markets.filter(m => m.no_price <= 0.20).length;
+  // Debug: log price distribution (expanded to 33¢ for 200% markup)
+  const yesUnder33 = markets.filter(m => m.yes_price <= 0.33).length;
+  const noUnder33 = markets.filter(m => m.no_price <= 0.33).length;
   const withEndDate = markets.filter(m => !!m.end_date).length;
   const withTicker = markets.filter(m => !!m.ticker).length;
-  console.log(`Value debug: ${markets.length} markets, ${withEndDate} with end_date, ${withTicker} with ticker, ${yesUnder20} yes≤20¢, ${noUnder20} no≤20¢`);
+  console.log(`Value debug: ${markets.length} markets, ${withEndDate} with end_date, ${withTicker} with ticker, ${yesUnder33} yes≤33¢, ${noUnder33} no≤33¢`);
 
   // Log some sample end dates for debugging
   const samplesWithEnd = markets.filter(m => m.end_date).slice(0, 3);
@@ -919,16 +925,16 @@ function findKalshiValueBets(markets: MarketData[], maxHours = 168): KalshiValue
     const hoursLeft = msLeft / (1000 * 60 * 60);
     if (hoursLeft < 0.25 || hoursLeft > maxHours) { timeFiltered++; continue; }
 
-    // Buy NO when YES is cheap (≤20¢ = event unlikely, NO should pay $1)
-    if (m.yes_price <= 0.20 && m.no_price > 0 && m.no_price <= 0.97) {
+    // Buy NO when YES is cheap (≤33¢ = 200%+ markup on NO side)
+    if (m.yes_price <= 0.33 && m.no_price > 0 && m.no_price <= 0.97) {
       const edge = ((1 - m.no_price) / m.no_price) * 100;
       if (edge >= 1) {
         bets.push({ market: m, side: "no", price: m.no_price, edge: Number(edge.toFixed(2)), hoursLeft: Number(hoursLeft.toFixed(1)) });
       }
     }
 
-    // Buy YES when NO is cheap (≤20¢ = event likely, YES should pay $1)
-    if (m.no_price <= 0.20 && m.yes_price > 0 && m.yes_price <= 0.97) {
+    // Buy YES when NO is cheap (≤33¢ = 200%+ markup on YES side)
+    if (m.no_price <= 0.33 && m.yes_price > 0 && m.yes_price <= 0.97) {
       const edge = ((1 - m.yes_price) / m.yes_price) * 100;
       if (edge >= 1) {
         bets.push({ market: m, side: "yes", price: m.yes_price, edge: Number(edge.toFixed(2)), hoursLeft: Number(hoursLeft.toFixed(1)) });
@@ -977,7 +983,7 @@ async function executeValueBets(
     return true;
   });
 
-  const toPlace = newBets.slice(0, Math.min(slotsAvailable, 3));
+  const toPlace = newBets.slice(0, 1); // Only 1 trade — full send
 
   if (toPlace.length === 0) {
     return new Response(JSON.stringify({ skipped: true, reason: "No new value bets (all already traded)" }), {
@@ -995,8 +1001,8 @@ async function executeValueBets(
     // Re-check balance
     const currentBal = await fetchKalshiBalance();
     const currentAvailable = Math.max(0, currentBal.balance - minFloor);
-    // Aggressive value bet sizing
-    const tradeSize = Math.min(maxPerTrade, currentAvailable * 0.6);
+    // FULL SEND — use entire available cash
+    const tradeSize = Math.max(0, currentAvailable);
     if (tradeSize < 0.10) {
       console.log(`Value bet: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
       break;
@@ -1419,12 +1425,9 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Step 3: Calculate per-trade size from available balance (above $15 floor)
-      const slotsAvailable = settings.max_open_trades - openPositions;
-      const perTradeSize = Math.min(
-        Math.floor(availableCash / Math.min(slotsAvailable, 3) * 100) / 100,
-        availableCash * 0.75 // aggressive: use up to 75% of available on a single trade
-      );
+      // Step 3: FULL SEND — use entire balance on 1 trade
+      const slotsAvailable = 1; // Only 1 trade
+      const perTradeSize = availableCash; // Use 100% of available cash
 
       if (perTradeSize < 0.10) {
         console.log(`Auto-trade: trade size too small ($${perTradeSize.toFixed(2)})`);
@@ -1444,7 +1447,7 @@ Deno.serve(async (req) => {
       const minSpread = (1 - settings.min_confidence) * 100;
       const now = Date.now();
       const MIN_MS = 100;                  // 0.1 second
-      const MAX_MS = 72 * 60 * 60 * 1000;  // 72 hours — wider window for more opportunities
+      const MAX_MS = 720 * 60 * 60 * 1000;  // 30 days — expanded window
 
       const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.2)
         .filter((a) => {
