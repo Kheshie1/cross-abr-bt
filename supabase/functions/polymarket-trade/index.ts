@@ -697,9 +697,6 @@ async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
     for (const m of markets) {
       // ─── SKIP only true parlay/multi-leg markets ───
       if (m.market_type === "multi_variate") { skipType++; continue; }
-      const title = m.title || "";
-      // MVE titles look like "yes Team1,yes Team2,no Team3"
-      if (/^(yes|no) .+,(yes|no) /i.test(title)) { skipTitle++; continue; }
 
       // ─── Use subtitle as primary (cleaner question format) ───
       const question = m.subtitle || m.title || m.yes_sub_title || "";
