@@ -694,17 +694,17 @@ async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
     cursor = data.cursor;
     console.log(`Kalshi page ${page}: ${markets.length} markets (cursor: ${cursor ? "yes" : "no"})`);
 
+    let skipMve = 0, skipType = 0, skipTitle = 0, skipQ = 0, skipPrice = 0;
     for (const m of markets) {
-      // ─── SKIP MVE / parlay markets (multi-leg combos) ───
-      if (m.mve_collection_ticker) continue;
-      if (m.market_type === "multi_variate") continue;
+      // ─── SKIP only true parlay/multi-leg markets ───
+      if (m.market_type === "multi_variate") { skipType++; continue; }
       const title = m.title || "";
       // MVE titles look like "yes Team1,yes Team2,no Team3"
-      if (/^(yes|no) .+,(yes|no) /i.test(title)) continue;
+      if (/^(yes|no) .+,(yes|no) /i.test(title)) { skipTitle++; continue; }
 
       // ─── Use subtitle as primary (cleaner question format) ───
       const question = m.subtitle || m.title || m.yes_sub_title || "";
-      if (question.length < 5) continue;
+      if (question.length < 5) { skipQ++; continue; }
 
       // ─── Price: use midpoint of bid/ask for accuracy ───
       const yesBid = m.yes_bid ?? 0;
@@ -713,12 +713,11 @@ async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
       const noAsk = m.no_ask ?? 0;
 
       // Use ask for buying (worst case for us = conservative)
-      // For NO side: use no_ask if available, otherwise derive from yes_bid
       const yesPrice = yesAsk > 0 ? yesAsk : (m.last_price ?? 0);
       const noPrice = noAsk > 0 ? noAsk : (noBid > 0 ? noBid : (100 - (yesAsk > 0 ? yesAsk : (m.last_price ?? 50))));
 
-      if (yesPrice <= 0 || noPrice <= 0) continue;
-      if (yesPrice >= 99 || noPrice >= 99) continue;
+      if (yesPrice <= 0 || noPrice <= 0) { skipPrice++; continue; }
+      if (yesPrice >= 99 || noPrice >= 99) { skipPrice++; continue; }
 
       allMarkets.push({
         id: m.ticker || "",
