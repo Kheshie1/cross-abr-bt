@@ -898,7 +898,7 @@ interface KalshiValueBet {
   hoursLeft: number;
 }
 
-function findKalshiValueBets(markets: MarketData[], maxHours = 168): KalshiValueBet[] {  // 7 days
+function findKalshiValueBets(markets: MarketData[], maxHours = 720): KalshiValueBet[] {  // 30 days — expanded for more opportunities
   const now = Date.now();
   const bets: KalshiValueBet[] = [];
   let checked = 0, timeFiltered = 0;
