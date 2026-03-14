@@ -694,6 +694,12 @@ async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
     const markets = data.markets || [];
     cursor = data.cursor;
     console.log(`Kalshi page ${page}: ${markets.length} markets (cursor: ${cursor ? "yes" : "no"})`);
+    // Debug: log first market's full structure on page 0
+    if (page === 0 && markets.length > 0) {
+      const sample = markets[0];
+      console.log(`Sample market keys: ${Object.keys(sample).join(", ")}`);
+      console.log(`Sample: ticker=${sample.ticker} yes_bid=${sample.yes_bid} yes_ask=${sample.yes_ask} no_bid=${sample.no_bid} no_ask=${sample.no_ask} last_price=${sample.last_price} yes_price=${sample.yes_price} no_price=${sample.no_price}`);
+    }
     for (const m of markets) {
       // ─── SKIP only true parlay/multi-leg markets ───
       if (m.market_type === "multi_variate") { skipType++; continue; }
@@ -702,11 +708,11 @@ async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
       const question = m.subtitle || m.title || m.yes_sub_title || "";
       if (question.length < 5) { skipQ++; continue; }
 
-      // ─── Price: use midpoint of bid/ask for accuracy ───
+      // ─── Price: try multiple field names ───
+      const yesAsk = m.yes_ask ?? m.yes_price ?? 0;
+      const noAsk = m.no_ask ?? m.no_price ?? 0;
       const yesBid = m.yes_bid ?? 0;
-      const yesAsk = m.yes_ask ?? 0;
       const noBid = m.no_bid ?? 0;
-      const noAsk = m.no_ask ?? 0;
 
       // Use ask for buying (worst case for us = conservative)
       const yesPrice = yesAsk > 0 ? yesAsk : (m.last_price ?? 0);
