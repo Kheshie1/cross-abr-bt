@@ -681,7 +681,6 @@ async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
     const params = new URLSearchParams({
       limit: "1000",
       status: "open",
-      mve_filter: "exclude", // Only single binary markets
     });
     if (cursor) params.set("cursor", cursor);
 
