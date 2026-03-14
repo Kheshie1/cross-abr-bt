@@ -735,6 +735,7 @@ async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
     if (!cursor || markets.length < 1000) break;
   }
 
+  console.log(`Kalshi filter stats: type=${skipType}, title=${skipTitle}, question=${skipQ}, price=${skipPrice}`);
   console.log(`Kalshi: ${allMarkets.length} single-binary markets after filtering`);
   return allMarkets;
 }
