@@ -1447,7 +1447,7 @@ Deno.serve(async (req) => {
       const minSpread = (1 - settings.min_confidence) * 100;
       const now = Date.now();
       const MIN_MS = 100;                  // 0.1 second
-      const MAX_MS = 72 * 60 * 60 * 1000;  // 72 hours — wider window for more opportunities
+      const MAX_MS = 720 * 60 * 60 * 1000;  // 30 days — expanded window
 
       const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.2)
         .filter((a) => {
