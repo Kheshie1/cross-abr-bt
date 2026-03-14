@@ -891,17 +891,17 @@ interface KalshiValueBet {
   hoursLeft: number;
 }
 
-function findKalshiValueBets(markets: MarketData[], maxHours = 168): KalshiValueBet[] {  // 7 days — tighter for faster resolution
+function findKalshiValueBets(markets: MarketData[], maxHours = 168): KalshiValueBet[] {  // 7 days
   const now = Date.now();
   const bets: KalshiValueBet[] = [];
   let checked = 0, timeFiltered = 0;
 
-  // Debug: log price distribution
-  const yesUnder20 = markets.filter(m => m.yes_price <= 0.20).length;
-  const noUnder20 = markets.filter(m => m.no_price <= 0.20).length;
+  // Debug: log price distribution (expanded to 33¢ for 200% markup)
+  const yesUnder33 = markets.filter(m => m.yes_price <= 0.33).length;
+  const noUnder33 = markets.filter(m => m.no_price <= 0.33).length;
   const withEndDate = markets.filter(m => !!m.end_date).length;
   const withTicker = markets.filter(m => !!m.ticker).length;
-  console.log(`Value debug: ${markets.length} markets, ${withEndDate} with end_date, ${withTicker} with ticker, ${yesUnder20} yes≤20¢, ${noUnder20} no≤20¢`);
+  console.log(`Value debug: ${markets.length} markets, ${withEndDate} with end_date, ${withTicker} with ticker, ${yesUnder33} yes≤33¢, ${noUnder33} no≤33¢`);
 
   // Log some sample end dates for debugging
   const samplesWithEnd = markets.filter(m => m.end_date).slice(0, 3);
@@ -918,16 +918,16 @@ function findKalshiValueBets(markets: MarketData[], maxHours = 168): KalshiValue
     const hoursLeft = msLeft / (1000 * 60 * 60);
     if (hoursLeft < 0.25 || hoursLeft > maxHours) { timeFiltered++; continue; }
 
-    // Buy NO when YES is cheap (≤20¢ = event unlikely, NO should pay $1)
-    if (m.yes_price <= 0.20 && m.no_price > 0 && m.no_price <= 0.97) {
+    // Buy NO when YES is cheap (≤33¢ = 200%+ markup on NO side)
+    if (m.yes_price <= 0.33 && m.no_price > 0 && m.no_price <= 0.97) {
       const edge = ((1 - m.no_price) / m.no_price) * 100;
       if (edge >= 1) {
         bets.push({ market: m, side: "no", price: m.no_price, edge: Number(edge.toFixed(2)), hoursLeft: Number(hoursLeft.toFixed(1)) });
       }
     }
 
-    // Buy YES when NO is cheap (≤20¢ = event likely, YES should pay $1)
-    if (m.no_price <= 0.20 && m.yes_price > 0 && m.yes_price <= 0.97) {
+    // Buy YES when NO is cheap (≤33¢ = 200%+ markup on YES side)
+    if (m.no_price <= 0.33 && m.yes_price > 0 && m.yes_price <= 0.97) {
       const edge = ((1 - m.yes_price) / m.yes_price) * 100;
       if (edge >= 1) {
         bets.push({ market: m, side: "yes", price: m.yes_price, edge: Number(edge.toFixed(2)), hoursLeft: Number(hoursLeft.toFixed(1)) });
