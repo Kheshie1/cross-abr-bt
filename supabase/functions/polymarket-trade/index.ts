@@ -708,15 +708,16 @@ async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
       const question = m.subtitle || m.title || m.yes_sub_title || "";
       if (question.length < 5) { skipQ++; continue; }
 
-      // ─── Price: try multiple field names ───
-      const yesAsk = m.yes_ask ?? m.yes_price ?? 0;
-      const noAsk = m.no_ask ?? m.no_price ?? 0;
-      const yesBid = m.yes_bid ?? 0;
-      const noBid = m.no_bid ?? 0;
+      // ─── Price: Kalshi V2 uses _dollars suffix (decimal values 0-1) ───
+      const yesAsk = m.yes_ask_dollars ?? m.yes_ask ?? 0;
+      const noAsk = m.no_ask_dollars ?? m.no_ask ?? 0;
+      const yesBid = m.yes_bid_dollars ?? m.yes_bid ?? 0;
+      const noBid = m.no_bid_dollars ?? m.no_bid ?? 0;
+      const lastPrice = m.last_price_dollars ?? m.last_price ?? 0;
 
-      // Use ask for buying (worst case for us = conservative)
-      const yesPrice = yesAsk > 0 ? yesAsk : (m.last_price ?? 0);
-      const noPrice = noAsk > 0 ? noAsk : (noBid > 0 ? noBid : (100 - (yesAsk > 0 ? yesAsk : (m.last_price ?? 50))));
+      // Prices are already in dollar format (0.xx), convert to cents for compatibility
+      const yesPrice = (yesAsk > 0 ? yesAsk : lastPrice) * 100;
+      const noPrice = (noAsk > 0 ? noAsk : (noBid > 0 ? noBid : (1 - (yesAsk > 0 ? yesAsk : (lastPrice || 0.5))))) * 100;
 
       if (yesPrice <= 0 || noPrice <= 0) { skipPrice++; continue; }
       if (yesPrice >= 99 || noPrice >= 99) { skipPrice++; continue; }
