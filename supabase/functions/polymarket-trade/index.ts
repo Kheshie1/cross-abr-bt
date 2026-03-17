@@ -682,6 +682,7 @@ async function fetchKalshiMarkets(maxPages = 10): Promise<MarketData[]> {
     const params = new URLSearchParams({
       limit: "1000",
       status: "open",
+      mve_filter: "exclude",
     });
     if (cursor) params.set("cursor", cursor);
 
