@@ -1926,6 +1926,173 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ──── SYNC KALSHI TRADES ────
+    if (action === "sync_kalshi_trades") {
+      // Get all Kalshi trades still marked as "live"
+      const { data: liveTrades, error: fetchErr } = await supabase
+        .from("polymarket_trades")
+        .select("*")
+        .like("side", "%KALSHI%")
+        .eq("status", "live");
+
+      if (fetchErr) throw fetchErr;
+      if (!liveTrades || liveTrades.length === 0) {
+        return new Response(JSON.stringify({ synced: 0, message: "No live Kalshi trades to sync" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      console.log(`Syncing ${liveTrades.length} live Kalshi trades...`);
+
+      // Group trades by ticker to minimize API calls
+      const tickerSet = new Set(liveTrades.map((t: any) => t.token_id || t.market_id));
+      const tickerStatuses: Record<string, any> = {};
+
+      for (const ticker of tickerSet) {
+        try {
+          const path = `/trade-api/v2/markets/${ticker}`;
+          const headers = await kalshiHeaders("GET", path);
+          const res = await fetch(`https://api.elections.kalshi.com${path}`, { headers });
+          if (res.ok) {
+            const data = await res.json();
+            const market = data.market || data;
+            tickerStatuses[ticker] = {
+              status: market.status, // e.g. "finalized", "settled", "active", "closed"
+              result: market.result, // "yes", "no", or null
+              close_time: market.close_time,
+              settlement_value: market.settlement_value,
+              yes_price: market.yes_ask !== undefined ? market.yes_ask / 100 : null,
+              no_price: market.no_ask !== undefined ? market.no_ask / 100 : null,
+            };
+            console.log(`  ${ticker}: status=${market.status}, result=${market.result}`);
+          } else {
+            console.warn(`  ${ticker}: API returned ${res.status}`);
+          }
+        } catch (e) {
+          console.warn(`  ${ticker}: fetch error: ${e}`);
+        }
+      }
+
+      // Also fetch settled orders to get actual fill info
+      let settledOrders: any[] = [];
+      try {
+        const path = "/trade-api/v2/portfolio/settlements";
+        const headers = await kalshiHeaders("GET", path);
+        const res = await fetch(`https://api.elections.kalshi.com${path}?limit=200`, { headers });
+        if (res.ok) {
+          const data = await res.json();
+          settledOrders = data.settlements || [];
+          console.log(`  Found ${settledOrders.length} settlements from Kalshi`);
+        }
+      } catch (e) {
+        console.warn(`  Settlements fetch failed: ${e}`);
+      }
+
+      // Build settlement lookup by ticker
+      const settlementByTicker: Record<string, any> = {};
+      for (const s of settledOrders) {
+        const t = s.ticker || s.market_ticker;
+        if (t) settlementByTicker[t] = s;
+      }
+
+      const updates: any[] = [];
+      let synced = 0;
+      let won = 0;
+      let lost = 0;
+      let totalPnl = 0;
+
+      for (const trade of liveTrades) {
+        const ticker = trade.token_id || trade.market_id;
+        const marketInfo = tickerStatuses[ticker];
+        if (!marketInfo) continue;
+
+        const isSettled = ["finalized", "settled", "closed"].includes(marketInfo.status);
+        if (!isSettled && marketInfo.status === "active") continue; // still active
+
+        // Determine if this trade won
+        const side = trade.side as string; // e.g. "BUY_YES@KALSHI" or "BUY_NO@KALSHI"
+        const boughtYes = side.includes("YES");
+        const boughtNo = side.includes("NO");
+        const result = marketInfo.result; // "yes" or "no"
+
+        let pnl = 0;
+        let newStatus = "settled";
+
+        if (result === "yes" && boughtYes) {
+          // Won: payout = size * $1, cost = size * price
+          pnl = trade.size * (1 - trade.price);
+          won++;
+        } else if (result === "no" && boughtNo) {
+          pnl = trade.size * (1 - trade.price);
+          won++;
+        } else if (result === "yes" && boughtNo) {
+          pnl = -(trade.size * trade.price);
+          lost++;
+        } else if (result === "no" && boughtYes) {
+          pnl = -(trade.size * trade.price);
+          lost++;
+        } else if (result === "all_no" || result === "all_yes") {
+          // Multi-outcome: all_no means NO wins
+          if (result === "all_no" && boughtNo) {
+            pnl = trade.size * (1 - trade.price);
+            won++;
+          } else if (result === "all_yes" && boughtYes) {
+            pnl = trade.size * (1 - trade.price);
+            won++;
+          } else {
+            pnl = -(trade.size * trade.price);
+            lost++;
+          }
+        } else if (!result && isSettled) {
+          // Settled but no clear result — check settlement data
+          const settlement = settlementByTicker[ticker];
+          if (settlement) {
+            pnl = (settlement.revenue || 0) / 100 - trade.size * trade.price;
+            if (pnl > 0) won++; else lost++;
+          } else {
+            newStatus = "expired";
+            pnl = -(trade.size * trade.price);
+            lost++;
+          }
+        } else {
+          continue; // can't determine yet
+        }
+
+        pnl = Math.round(pnl * 100) / 100;
+        totalPnl += pnl;
+
+        updates.push({
+          id: trade.id,
+          status: newStatus,
+          profit_loss: pnl,
+          market_question: trade.market_question,
+          result: result || "unknown",
+        });
+
+        // Update in DB
+        await supabase
+          .from("polymarket_trades")
+          .update({ status: newStatus, profit_loss: pnl })
+          .eq("id", trade.id);
+
+        synced++;
+      }
+
+      totalPnl = Math.round(totalPnl * 100) / 100;
+
+      return new Response(JSON.stringify({
+        synced,
+        total_live: liveTrades.length,
+        still_active: liveTrades.length - synced,
+        won,
+        lost,
+        total_pnl: totalPnl,
+        updates,
+      }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     return new Response(JSON.stringify({ error: "Unknown action" }), {
       status: 400,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
