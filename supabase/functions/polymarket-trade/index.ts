@@ -1477,7 +1477,7 @@ Deno.serve(async (req) => {
 
       console.log(`Auto-trade: sizing $${perTradeSize.toFixed(2)}/trade (${slotsAvailable} slots, $${availableCash.toFixed(2)} available, $${cashBalance.toFixed(2)} total)`);
 
-      // Step 4: Find arbs
+      // Step 4: Find arbs — CAUTIOUS MODE: only guaranteed-profit trades resolving in 1-2 days
       const [polymarkets, kalshiMarkets] = await Promise.all([
         fetchPolymarkets(500),
         fetchKalshiMarkets(5),
@@ -1486,7 +1486,7 @@ Deno.serve(async (req) => {
       const minSpread = (1 - settings.min_confidence) * 100;
       const now = Date.now();
       const MIN_MS = 100;                  // 0.1 second
-      const MAX_MS = 720 * 60 * 60 * 1000;  // 30 days — expanded window
+      const MAX_MS = 48 * 60 * 60 * 1000;  // 48 hours — cautious window for fast resolution
 
       const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.2)
         .filter((a) => {
