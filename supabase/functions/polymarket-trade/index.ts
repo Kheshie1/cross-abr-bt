@@ -872,6 +872,9 @@ interface KalshiInternalArb {
 function findKalshiInternalArbs(markets: MarketData[]): KalshiInternalArb[] {
   const arbs: KalshiInternalArb[] = [];
   for (const m of markets) {
+    // Skip toxic market types
+    if (isToxicMarket(m.ticker || "", m.question)) continue;
+
     const totalCost = m.yes_price + m.no_price;
     if (totalCost < 0.99) { // Must cost less than $0.99 for guaranteed profit after fees
       const profit = 1 - totalCost;
