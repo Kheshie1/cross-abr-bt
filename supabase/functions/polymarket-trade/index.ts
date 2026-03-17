@@ -961,47 +961,40 @@ interface KalshiValueBet {
   hoursLeft: number;
 }
 
-function findKalshiValueBets(markets: MarketData[], maxHours = 720): KalshiValueBet[] {  // 30 days — expanded for more opportunities
+function findKalshiValueBets(markets: MarketData[], maxHours = 48): KalshiValueBet[] {  // 48h — cautious, fast resolution
   const now = Date.now();
   const bets: KalshiValueBet[] = [];
   let checked = 0, timeFiltered = 0, toxicFiltered = 0;
 
-  // Debug: log price distribution (expanded to 33¢ for 200% markup)
-  const yesUnder33 = markets.filter(m => m.yes_price <= 0.33).length;
-  const noUnder33 = markets.filter(m => m.no_price <= 0.33).length;
+  // ULTRA-SAFE: Only bet on near-certain outcomes (≤5¢ = 95%+ implied probability)
+  const SAFE_THRESHOLD = 0.05;
+
+  const yesUnder5 = markets.filter(m => m.yes_price <= SAFE_THRESHOLD).length;
+  const noUnder5 = markets.filter(m => m.no_price <= SAFE_THRESHOLD).length;
   const withEndDate = markets.filter(m => !!m.end_date).length;
   const withTicker = markets.filter(m => !!m.ticker).length;
-  console.log(`Value debug: ${markets.length} markets, ${withEndDate} with end_date, ${withTicker} with ticker, ${yesUnder33} yes≤33¢, ${noUnder33} no≤33¢`);
-
-  // Log some sample end dates for debugging
-  const samplesWithEnd = markets.filter(m => m.end_date).slice(0, 3);
-  for (const s of samplesWithEnd) {
-    const msLeft = new Date(s.end_date!).getTime() - now;
-    const h = msLeft / (1000 * 60 * 60);
-    console.log(`Sample: ${s.ticker} end=${s.end_date} hoursLeft=${h.toFixed(1)} yes=${s.yes_price} no=${s.no_price}`);
-  }
+  console.log(`Value debug (safe): ${markets.length} markets, ${withEndDate} with end_date, ${withTicker} with ticker, ${yesUnder5} yes≤5¢, ${noUnder5} no≤5¢`);
 
   for (const m of markets) {
     if (!m.end_date || !m.ticker) continue;
     checked++;
 
-    // Block toxic market types
     if (isToxicMarket(m.ticker, m.question)) { toxicFiltered++; continue; }
 
     const msLeft = new Date(m.end_date).getTime() - now;
     const hoursLeft = msLeft / (1000 * 60 * 60);
     if (hoursLeft < 0.25 || hoursLeft > maxHours) { timeFiltered++; continue; }
 
-    // Buy NO when YES is cheap (≤33¢ = 200%+ markup on NO side)
-    if (m.yes_price <= 0.33 && m.no_price > 0 && m.no_price <= 0.97) {
+    // SAFE: Buy NO when YES is ≤5¢ (opponent priced at 95%+ to lose)
+    if (m.yes_price <= SAFE_THRESHOLD && m.no_price > 0 && m.no_price <= 0.97) {
       const edge = ((1 - m.no_price) / m.no_price) * 100;
       if (edge >= 1) {
         bets.push({ market: m, side: "no", price: m.no_price, edge: Number(edge.toFixed(2)), hoursLeft: Number(hoursLeft.toFixed(1)) });
       }
     }
 
-    // Buy YES when NO is cheap (≤33¢ = 200%+ markup on YES side)
-    if (m.no_price <= 0.33 && m.yes_price > 0 && m.yes_price <= 0.97) {
+    // SAFE: Buy YES when NO is ≤5¢ (priced at 95%+ to win)
+    if (m.no_price <= SAFE_THRESHOLD && m.yes_price > 0 && m.yes_price <= 0.97) {
       const edge = ((1 - m.yes_price) / m.yes_price) * 100;
       if (edge >= 1) {
         bets.push({ market: m, side: "yes", price: m.yes_price, edge: Number(edge.toFixed(2)), hoursLeft: Number(hoursLeft.toFixed(1)) });
