@@ -932,8 +932,8 @@ const TOXIC_TICKER_PATTERNS = [
   /^KXADA/i,            // ALL ADA price markets
   /^KXBNB/i,            // ALL BNB price markets
   /^KXAVAX/i,           // ALL AVAX price markets
-  /^KXHIGHT/i,          // High temperature range bets
-  /^KXLOWT/i,           // Low temperature range bets
+  /^KXHIGH/i,           // ALL high temperature markets (any city)
+  /^KXLOW/i,            // ALL low temperature markets (any city)
   /^KXATPCHALLENGER/i,  // ATP Challenger tennis
   /^KXWTACHALLENGER/i,  // WTA Challenger tennis
 ];
