@@ -872,6 +872,9 @@ interface KalshiInternalArb {
 function findKalshiInternalArbs(markets: MarketData[]): KalshiInternalArb[] {
   const arbs: KalshiInternalArb[] = [];
   for (const m of markets) {
+    // Skip toxic market types
+    if (isToxicMarket(m.ticker || "", m.question)) continue;
+
     const totalCost = m.yes_price + m.no_price;
     if (totalCost < 0.99) { // Must cost less than $0.99 for guaranteed profit after fees
       const profit = 1 - totalCost;
@@ -888,6 +891,38 @@ function findKalshiInternalArbs(markets: MarketData[]): KalshiInternalArb[] {
   return arbs.sort((a, b) => b.spread_pct - a.spread_pct);
 }
 
+// ──────────── TOXIC MARKET FILTER ────────────
+// These market patterns have historically caused the majority of losses.
+// Block them entirely to protect the bankroll.
+
+const TOXIC_TICKER_PATTERNS = [
+  /^KXBTC-/i,           // BTC hourly price range bets — coin flips, -$16.51 lost
+  /^KXETH-/i,           // ETH price range bets — same problem
+  /^KXHIGHT/i,          // High temperature range bets — -$4.69+ lost
+  /^KXLOWT/i,           // Low temperature range bets — unpredictable
+  /^KXATPCHALLENGER/i,  // ATP Challenger tennis — single $21.18 loss
+  /^KXWTACHALLENGER/i,  // WTA Challenger tennis
+];
+
+const TOXIC_QUESTION_PATTERNS = [
+  /temperature.*\d+-\d+°/i,     // exact temp bracket bets
+  /\$[\d,]+(\.\d+)?\s+to\s+/i,  // price range bets ("$68,500 to 68,749.99")
+  /price.*between/i,             // price between X and Y
+];
+
+// Max size for any single trade to prevent catastrophic single-bet losses
+const MAX_SINGLE_TRADE_SIZE = 5.00;
+
+function isToxicMarket(ticker: string, question: string): boolean {
+  for (const pat of TOXIC_TICKER_PATTERNS) {
+    if (pat.test(ticker)) return true;
+  }
+  for (const pat of TOXIC_QUESTION_PATTERNS) {
+    if (pat.test(question)) return true;
+  }
+  return false;
+}
+
 // ──────────── KALSHI VALUE BETTING ────────────
 
 interface KalshiValueBet {
@@ -901,7 +936,7 @@ interface KalshiValueBet {
 function findKalshiValueBets(markets: MarketData[], maxHours = 720): KalshiValueBet[] {  // 30 days — expanded for more opportunities
   const now = Date.now();
   const bets: KalshiValueBet[] = [];
-  let checked = 0, timeFiltered = 0;
+  let checked = 0, timeFiltered = 0, toxicFiltered = 0;
 
   // Debug: log price distribution (expanded to 33¢ for 200% markup)
   const yesUnder33 = markets.filter(m => m.yes_price <= 0.33).length;
@@ -921,6 +956,10 @@ function findKalshiValueBets(markets: MarketData[], maxHours = 720): KalshiValue
   for (const m of markets) {
     if (!m.end_date || !m.ticker) continue;
     checked++;
+
+    // Block toxic market types
+    if (isToxicMarket(m.ticker, m.question)) { toxicFiltered++; continue; }
+
     const msLeft = new Date(m.end_date).getTime() - now;
     const hoursLeft = msLeft / (1000 * 60 * 60);
     if (hoursLeft < 0.25 || hoursLeft > maxHours) { timeFiltered++; continue; }
@@ -949,7 +988,7 @@ function findKalshiValueBets(markets: MarketData[], maxHours = 720): KalshiValue
     if (!seen.has(key) || seen.get(key)!.edge < b.edge) seen.set(key, b);
   }
 
-  console.log(`Value scan: ${checked} checked, ${timeFiltered} time-filtered, ${bets.length} candidates`);
+  console.log(`Value scan: ${checked} checked, ${toxicFiltered} toxic-filtered, ${timeFiltered} time-filtered, ${bets.length} candidates`);
 
   return Array.from(seen.values()).sort((a, b) => {
     return (b.edge / Math.max(b.hoursLeft, 0.5)) - (a.edge / Math.max(a.hoursLeft, 0.5));
@@ -1001,8 +1040,8 @@ async function executeValueBets(
     // Re-check balance
     const currentBal = await fetchKalshiBalance();
     const currentAvailable = Math.max(0, currentBal.balance - minFloor);
-    // FULL SEND — use entire available cash
-    const tradeSize = Math.max(0, currentAvailable);
+    // Capped FULL SEND — use available cash but never exceed MAX_SINGLE_TRADE_SIZE
+    const tradeSize = Math.min(currentAvailable, MAX_SINGLE_TRADE_SIZE);
     if (tradeSize < 0.10) {
       console.log(`Value bet: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
       break;
@@ -1427,7 +1466,7 @@ Deno.serve(async (req) => {
 
       // Step 3: FULL SEND — use entire balance on 1 trade
       const slotsAvailable = 1; // Only 1 trade
-      const perTradeSize = availableCash; // Use 100% of available cash
+      const perTradeSize = Math.min(availableCash, MAX_SINGLE_TRADE_SIZE); // Capped to prevent catastrophic single-bet losses
 
       if (perTradeSize < 0.10) {
         console.log(`Auto-trade: trade size too small ($${perTradeSize.toFixed(2)})`);
