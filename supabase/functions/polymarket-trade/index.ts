@@ -704,6 +704,28 @@ async function fetchKalshiMarkets(maxPages = 10): Promise<MarketData[]> {
       } else {
         console.log(`ALL ${markets.length} markets on page ${page} are MVE legs`);
       }
+      // Price distribution debug
+      const priceRanges = { extreme: 0, mid: 0, cheap: 0, zero: 0, hasSubtitle: 0 };
+      for (const x of markets) {
+        const ya = parseFloat(x.yes_ask_dollars) || 0;
+        const na = parseFloat(x.no_ask_dollars) || 0;
+        if (ya <= 0.01 || na <= 0.01) priceRanges.zero++;
+        else if (ya >= 0.99 || na >= 0.99) priceRanges.extreme++;
+        else if (ya >= 0.90 || na >= 0.90) priceRanges.mid++;
+        else priceRanges.cheap++;
+        if ((x.subtitle || "").length >= 5) priceRanges.hasSubtitle++;
+      }
+      console.log(`Price dist p0: zero=${priceRanges.zero} extreme=${priceRanges.extreme} mid=${priceRanges.mid} cheap=${priceRanges.cheap} hasSubtitle=${priceRanges.hasSubtitle}`);
+      // Log a market with a subtitle if possible
+      const withSub = markets.find((x: any) => (x.subtitle || "").length >= 5);
+      if (withSub) console.log(`WithSub: ticker=${withSub.ticker} yes=${withSub.yes_ask_dollars} no=${withSub.no_ask_dollars} sub="${(withSub.subtitle||"").slice(0,80)}"`);
+      // Log a market with mid prices
+      const midPrice = markets.find((x: any) => {
+        const ya = parseFloat(x.yes_ask_dollars) || 0;
+        const na = parseFloat(x.no_ask_dollars) || 0;
+        return ya > 0.05 && ya < 0.95 && na > 0.05 && na < 0.95;
+      });
+      if (midPrice) console.log(`MidPrice: ticker=${midPrice.ticker} yes=${midPrice.yes_ask_dollars} no=${midPrice.no_ask_dollars} title="${(midPrice.title||"").slice(0,80)}"`);
     }
 
     for (const m of markets) {
