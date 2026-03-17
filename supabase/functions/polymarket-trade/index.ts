@@ -1813,10 +1813,8 @@ Deno.serve(async (req) => {
           });
         }
 
-        // CAUTIOUS MODE: no value bets — only guaranteed-profit arbs
-        return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit arbs available (cautious mode)." }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        // Fall back to ultra-safe value bets (≤5¢ threshold, 48h, $2 max)
+        return await executeValueBets(supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR, slotsAvailable, tradedMarketIds, tradedQuestions);
       }
 
       const { data: trades, error: tradeErr } = await supabase
