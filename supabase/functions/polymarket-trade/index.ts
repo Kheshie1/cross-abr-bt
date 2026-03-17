@@ -1485,7 +1485,7 @@ Deno.serve(async (req) => {
       // Step 4: Find arbs — CAUTIOUS MODE: only guaranteed-profit trades resolving in 1-2 days
       const [polymarkets, kalshiMarkets] = await Promise.all([
         fetchPolymarkets(500),
-        fetchKalshiMarkets(5),
+        fetchKalshiMarkets(10),
       ]);
 
       const minSpread = (1 - settings.min_confidence) * 100;
