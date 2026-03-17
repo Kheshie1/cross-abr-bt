@@ -1620,8 +1620,10 @@ Deno.serve(async (req) => {
           });
         }
 
-        // Try value betting as final fallback
-        return await executeValueBets(supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR, slotsAvailable, tradedMarketIds, tradedQuestions);
+        // CAUTIOUS MODE: no value bets — only guaranteed-profit arbs
+        return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit Kalshi internal arbs. Skipping value bets (cautious mode)." }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
 
       // Step 5: Execute real orders on Polymarket + record in DB
