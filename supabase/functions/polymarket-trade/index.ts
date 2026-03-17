@@ -942,6 +942,7 @@ const TOXIC_QUESTION_PATTERNS = [
   /temperature.*\d+-\d+°/i,     // exact temp bracket bets
   /\$[\d,]+(\.\d+)?\s+to\s+/i,  // price range bets ("$68,500 to 68,749.99")
   /price.*between/i,             // price between X and Y
+  /\bprice\b.*on\s+\w+\s+\d/i,  // "price on Mar 17" — all crypto/commodity price bets
 ];
 
 // Max size for any single trade to prevent catastrophic single-bet losses
