@@ -1463,7 +1463,7 @@ Deno.serve(async (req) => {
 
       // Step 3: FULL SEND — use entire balance on 1 trade
       const slotsAvailable = 1; // Only 1 trade
-      const perTradeSize = availableCash; // Use 100% of available cash
+      const perTradeSize = Math.min(availableCash, MAX_SINGLE_TRADE_SIZE); // Capped to prevent catastrophic single-bet losses
 
       if (perTradeSize < 0.10) {
         console.log(`Auto-trade: trade size too small ($${perTradeSize.toFixed(2)})`);
