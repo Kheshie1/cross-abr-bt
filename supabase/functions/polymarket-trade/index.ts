@@ -735,8 +735,8 @@ async function fetchKalshiMarkets(maxPages = 10): Promise<MarketData[]> {
       // ─── SKIP multi-variate type ───
       if (m.market_type === "multi_variate") { skipType++; continue; }
 
-      // ─── Use subtitle as primary (cleaner question format) ───
-      const question = m.subtitle || m.title || m.yes_sub_title || "";
+      // ─── Use title as primary, subtitle as fallback ───
+      const question = m.title || m.subtitle || m.yes_sub_title || "";
       if (question.length < 5) { skipQ++; continue; }
 
       // ─── Price: Kalshi V2 uses _dollars suffix (decimal values 0-1) ───
