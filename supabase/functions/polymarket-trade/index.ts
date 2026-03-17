@@ -1545,10 +1545,8 @@ Deno.serve(async (req) => {
         const kalshiToExecute = kalshiNew.slice(0, Math.min(slotsAvailable, 3));
 
         if (kalshiToExecute.length === 0) {
-          // CAUTIOUS MODE: no value bets — only guaranteed-profit arbs
-          return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit arbs found. Skipping value bets (cautious mode)." }), {
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
+          // Fall back to ultra-safe value bets (≤5¢ threshold, 48h, $2 max)
+          return await executeValueBets(supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR, slotsAvailable, tradedMarketIds, tradedQuestions);
         }
 
         const kalshiInserts = [];
