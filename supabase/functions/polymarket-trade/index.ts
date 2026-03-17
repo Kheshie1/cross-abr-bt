@@ -1480,13 +1480,22 @@ Deno.serve(async (req) => {
       console.log(`Auto-trade: ${openPositions} live on-chain positions`);
 
       // Also get traded market IDs/questions from DB for duplicate prevention
+      // FIX: check ALL active statuses, not just "executed" (trades are saved as "live")
+      const MAX_PER_MARKET = 3; // Max trades per unique market question
       const { data: existingTrades } = await supabase
         .from("polymarket_trades")
         .select("market_id, market_question")
-        .eq("status", "executed");
+        .in("status", ["live", "executed", "pending"]);
 
-      const tradedMarketIds = new Set((existingTrades || []).map((t) => t.market_id));
-      const tradedQuestions = new Set((existingTrades || []).map((t) => normalize(t.market_question || "")));
+      const tradedMarketIds = new Set((existingTrades || []).map((t: any) => t.market_id));
+      const tradedQuestions = new Set<string>();
+      const marketQuestionCounts = new Map<string, number>();
+      for (const t of (existingTrades || [])) {
+        const nq = normalize(t.market_question || "");
+        const count = (marketQuestionCounts.get(nq) || 0) + 1;
+        marketQuestionCounts.set(nq, count);
+        if (count >= MAX_PER_MARKET) tradedQuestions.add(nq);
+      }
 
       if (openPositions >= settings.max_open_trades) {
         console.log(`Auto-trade: skipped — ${openPositions}/${settings.max_open_trades} positions filled`);
