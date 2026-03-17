@@ -924,11 +924,17 @@ function findKalshiInternalArbs(markets: MarketData[]): KalshiInternalArb[] {
 // Block them entirely to protect the bankroll.
 
 const TOXIC_TICKER_PATTERNS = [
-  /^KXBTC/i,            // ALL BTC price markets — coin flips, -$16.51 lost
-  /^KXETH/i,            // ALL ETH price markets — same problem
-  /^KXHIGHT/i,          // High temperature range bets — -$4.69+ lost
-  /^KXLOWT/i,           // Low temperature range bets — unpredictable
-  /^KXATPCHALLENGER/i,  // ATP Challenger tennis — single $21.18 loss
+  /^KXBTC/i,            // ALL BTC price markets
+  /^KXETH/i,            // ALL ETH price markets
+  /^KXSOL/i,            // ALL SOL price markets
+  /^KXDOGE/i,           // ALL DOGE price markets
+  /^KXXRP/i,            // ALL XRP price markets
+  /^KXADA/i,            // ALL ADA price markets
+  /^KXBNB/i,            // ALL BNB price markets
+  /^KXAVAX/i,           // ALL AVAX price markets
+  /^KXHIGHT/i,          // High temperature range bets
+  /^KXLOWT/i,           // Low temperature range bets
+  /^KXATPCHALLENGER/i,  // ATP Challenger tennis
   /^KXWTACHALLENGER/i,  // WTA Challenger tennis
 ];
 
