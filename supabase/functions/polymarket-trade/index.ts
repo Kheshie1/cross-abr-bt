@@ -673,10 +673,10 @@ async function fetchPolymarkets(limit = 500): Promise<MarketData[]> {
 
 // ──────────── KALSHI FETCH (multi-page, MVE excluded) ────────────
 
-async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
+async function fetchKalshiMarkets(maxPages = 10): Promise<MarketData[]> {
   const allMarkets: MarketData[] = [];
   let cursor: string | undefined;
-  let skipType = 0, skipTitle = 0, skipQ = 0, skipPrice = 0;
+  let skipMve = 0, skipType = 0, skipQ = 0, skipPrice = 0;
 
   for (let page = 0; page < maxPages; page++) {
     const params = new URLSearchParams({
@@ -694,18 +694,22 @@ async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
     const markets = data.markets || [];
     cursor = data.cursor;
     console.log(`Kalshi page ${page}: ${markets.length} markets (cursor: ${cursor ? "yes" : "no"})`);
-    // Debug: log first market's full structure on page 0
+
+    // Debug first page
     if (page === 0 && markets.length > 0) {
-      const sample = markets[0];
-      console.log(`Sample market keys: ${Object.keys(sample).join(", ")}`);
-      console.log(`Sample: ticker=${sample.ticker} yes_ask_dollars=${sample.yes_ask_dollars} no_ask_dollars=${sample.no_ask_dollars} yes_bid_dollars=${sample.yes_bid_dollars} no_bid_dollars=${sample.no_bid_dollars} last_price_dollars=${sample.last_price_dollars} subtitle=${(sample.subtitle||"").slice(0,40)}`);
-      // Also log a non-MVE market if possible
       const nonMve = markets.find((x: any) => !x.mve_collection_ticker);
-      if (nonMve) console.log(`Non-MVE: ticker=${nonMve.ticker} yes_ask_dollars=${nonMve.yes_ask_dollars} no_ask_dollars=${nonMve.no_ask_dollars} last_price_dollars=${nonMve.last_price_dollars}`);
-      else console.log(`ALL ${markets.length} markets on page 0 have mve_collection_ticker`);
+      if (nonMve) {
+        console.log(`First non-MVE: ticker=${nonMve.ticker} yes_ask=${nonMve.yes_ask_dollars} no_ask=${nonMve.no_ask_dollars} subtitle=${(nonMve.subtitle||"").slice(0,60)}`);
+      } else {
+        console.log(`ALL ${markets.length} markets on page ${page} are MVE legs`);
+      }
     }
+
     for (const m of markets) {
-      // ─── SKIP only true parlay/multi-leg markets ───
+      // ─── SKIP MVE parlay legs (they have dead 0/1 prices and no subtitle) ───
+      if (m.mve_collection_ticker) { skipMve++; continue; }
+
+      // ─── SKIP multi-variate type ───
       if (m.market_type === "multi_variate") { skipType++; continue; }
 
       // ─── Use subtitle as primary (cleaner question format) ───
@@ -713,26 +717,27 @@ async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
       if (question.length < 5) { skipQ++; continue; }
 
       // ─── Price: Kalshi V2 uses _dollars suffix (decimal values 0-1) ───
-      const yesAsk = m.yes_ask_dollars ?? m.yes_ask ?? 0;
-      const noAsk = m.no_ask_dollars ?? m.no_ask ?? 0;
-      const yesBid = m.yes_bid_dollars ?? m.yes_bid ?? 0;
-      const noBid = m.no_bid_dollars ?? m.no_bid ?? 0;
-      const lastPrice = m.last_price_dollars ?? m.last_price ?? 0;
+      const yesAsk = parseFloat(m.yes_ask_dollars) || 0;
+      const noAsk = parseFloat(m.no_ask_dollars) || 0;
+      const yesBid = parseFloat(m.yes_bid_dollars) || 0;
+      const noBid = parseFloat(m.no_bid_dollars) || 0;
+      const lastPrice = parseFloat(m.last_price_dollars) || 0;
 
-      // Prices are already in dollar format (0.xx), convert to cents for compatibility
-      const yesPrice = (yesAsk > 0 ? yesAsk : lastPrice) * 100;
-      const noPrice = (noAsk > 0 ? noAsk : (noBid > 0 ? noBid : (1 - (yesAsk > 0 ? yesAsk : (lastPrice || 0.5))))) * 100;
+      // Use best available price source
+      const yesPrice = yesAsk > 0 ? yesAsk : (yesBid > 0 ? yesBid : lastPrice);
+      const noPrice = noAsk > 0 ? noAsk : (noBid > 0 ? noBid : (1 - yesPrice));
 
-      if (yesPrice <= 0 || noPrice <= 0) { skipPrice++; continue; }
-      if (yesPrice >= 99 || noPrice >= 99) { skipPrice++; continue; }
+      // Filter: need real prices between 1¢ and 99¢
+      if (yesPrice <= 0.01 || noPrice <= 0.01) { skipPrice++; continue; }
+      if (yesPrice >= 0.99 || noPrice >= 0.99) { skipPrice++; continue; }
 
       allMarkets.push({
         id: m.ticker || "",
         question,
-        yes_price: yesPrice / 100,
-        no_price: noPrice / 100,
+        yes_price: yesPrice,
+        no_price: noPrice,
         platform: "kalshi" as const,
-        volume: m.volume_24h || m.volume || 0,
+        volume: m.volume_24h || m.volume_fp || m.volume || 0,
         end_date: m.close_time || m.expiration_time,
         ticker: m.ticker,
         category: m.event_ticker || "",
@@ -742,7 +747,7 @@ async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
     if (!cursor || markets.length < 1000) break;
   }
 
-  console.log(`Kalshi filter stats: type=${skipType}, question=${skipQ}, price=${skipPrice}`);
+  console.log(`Kalshi filter stats: mve=${skipMve}, type=${skipType}, question=${skipQ}, price=${skipPrice}`);
   console.log(`Kalshi: ${allMarkets.length} single-binary markets after filtering`);
   return allMarkets;
 }
