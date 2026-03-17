@@ -673,15 +673,16 @@ async function fetchPolymarkets(limit = 500): Promise<MarketData[]> {
 
 // ──────────── KALSHI FETCH (multi-page, MVE excluded) ────────────
 
-async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
+async function fetchKalshiMarkets(maxPages = 10): Promise<MarketData[]> {
   const allMarkets: MarketData[] = [];
   let cursor: string | undefined;
-  let skipType = 0, skipTitle = 0, skipQ = 0, skipPrice = 0;
+  let skipMve = 0, skipType = 0, skipQ = 0, skipPrice = 0;
 
   for (let page = 0; page < maxPages; page++) {
     const params = new URLSearchParams({
       limit: "1000",
       status: "open",
+      mve_filter: "exclude",
     });
     if (cursor) params.set("cursor", cursor);
 
@@ -694,45 +695,72 @@ async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
     const markets = data.markets || [];
     cursor = data.cursor;
     console.log(`Kalshi page ${page}: ${markets.length} markets (cursor: ${cursor ? "yes" : "no"})`);
-    // Debug: log first market's full structure on page 0
+
+    // Debug first page
     if (page === 0 && markets.length > 0) {
-      const sample = markets[0];
-      console.log(`Sample market keys: ${Object.keys(sample).join(", ")}`);
-      console.log(`Sample: ticker=${sample.ticker} yes_ask_dollars=${sample.yes_ask_dollars} no_ask_dollars=${sample.no_ask_dollars} yes_bid_dollars=${sample.yes_bid_dollars} no_bid_dollars=${sample.no_bid_dollars} last_price_dollars=${sample.last_price_dollars} subtitle=${(sample.subtitle||"").slice(0,40)}`);
-      // Also log a non-MVE market if possible
       const nonMve = markets.find((x: any) => !x.mve_collection_ticker);
-      if (nonMve) console.log(`Non-MVE: ticker=${nonMve.ticker} yes_ask_dollars=${nonMve.yes_ask_dollars} no_ask_dollars=${nonMve.no_ask_dollars} last_price_dollars=${nonMve.last_price_dollars}`);
-      else console.log(`ALL ${markets.length} markets on page 0 have mve_collection_ticker`);
+      if (nonMve) {
+        console.log(`First non-MVE: ticker=${nonMve.ticker} yes_ask=${nonMve.yes_ask_dollars} no_ask=${nonMve.no_ask_dollars} subtitle=${(nonMve.subtitle||"").slice(0,60)}`);
+      } else {
+        console.log(`ALL ${markets.length} markets on page ${page} are MVE legs`);
+      }
+      // Price distribution debug
+      const priceRanges = { extreme: 0, mid: 0, cheap: 0, zero: 0, hasSubtitle: 0 };
+      for (const x of markets) {
+        const ya = parseFloat(x.yes_ask_dollars) || 0;
+        const na = parseFloat(x.no_ask_dollars) || 0;
+        if (ya <= 0.01 || na <= 0.01) priceRanges.zero++;
+        else if (ya >= 0.99 || na >= 0.99) priceRanges.extreme++;
+        else if (ya >= 0.90 || na >= 0.90) priceRanges.mid++;
+        else priceRanges.cheap++;
+        if ((x.subtitle || "").length >= 5) priceRanges.hasSubtitle++;
+      }
+      console.log(`Price dist p0: zero=${priceRanges.zero} extreme=${priceRanges.extreme} mid=${priceRanges.mid} cheap=${priceRanges.cheap} hasSubtitle=${priceRanges.hasSubtitle}`);
+      // Log a market with a subtitle if possible
+      const withSub = markets.find((x: any) => (x.subtitle || "").length >= 5);
+      if (withSub) console.log(`WithSub: ticker=${withSub.ticker} yes=${withSub.yes_ask_dollars} no=${withSub.no_ask_dollars} sub="${(withSub.subtitle||"").slice(0,80)}"`);
+      // Log a market with mid prices
+      const midPrice = markets.find((x: any) => {
+        const ya = parseFloat(x.yes_ask_dollars) || 0;
+        const na = parseFloat(x.no_ask_dollars) || 0;
+        return ya > 0.05 && ya < 0.95 && na > 0.05 && na < 0.95;
+      });
+      if (midPrice) console.log(`MidPrice: ticker=${midPrice.ticker} yes=${midPrice.yes_ask_dollars} no=${midPrice.no_ask_dollars} title="${(midPrice.title||"").slice(0,80)}"`);
     }
+
     for (const m of markets) {
-      // ─── SKIP only true parlay/multi-leg markets ───
+      // ─── SKIP MVE parlay legs (they have dead 0/1 prices and no subtitle) ───
+      if (m.mve_collection_ticker) { skipMve++; continue; }
+
+      // ─── SKIP multi-variate type ───
       if (m.market_type === "multi_variate") { skipType++; continue; }
 
-      // ─── Use subtitle as primary (cleaner question format) ───
-      const question = m.subtitle || m.title || m.yes_sub_title || "";
+      // ─── Use title as primary, subtitle as fallback ───
+      const question = m.title || m.subtitle || m.yes_sub_title || "";
       if (question.length < 5) { skipQ++; continue; }
 
       // ─── Price: Kalshi V2 uses _dollars suffix (decimal values 0-1) ───
-      const yesAsk = m.yes_ask_dollars ?? m.yes_ask ?? 0;
-      const noAsk = m.no_ask_dollars ?? m.no_ask ?? 0;
-      const yesBid = m.yes_bid_dollars ?? m.yes_bid ?? 0;
-      const noBid = m.no_bid_dollars ?? m.no_bid ?? 0;
-      const lastPrice = m.last_price_dollars ?? m.last_price ?? 0;
+      const yesAsk = parseFloat(m.yes_ask_dollars) || 0;
+      const noAsk = parseFloat(m.no_ask_dollars) || 0;
+      const yesBid = parseFloat(m.yes_bid_dollars) || 0;
+      const noBid = parseFloat(m.no_bid_dollars) || 0;
+      const lastPrice = parseFloat(m.last_price_dollars) || 0;
 
-      // Prices are already in dollar format (0.xx), convert to cents for compatibility
-      const yesPrice = (yesAsk > 0 ? yesAsk : lastPrice) * 100;
-      const noPrice = (noAsk > 0 ? noAsk : (noBid > 0 ? noBid : (1 - (yesAsk > 0 ? yesAsk : (lastPrice || 0.5))))) * 100;
+      // Use best available price source
+      const yesPrice = yesAsk > 0 ? yesAsk : (yesBid > 0 ? yesBid : lastPrice);
+      const noPrice = noAsk > 0 ? noAsk : (noBid > 0 ? noBid : (1 - yesPrice));
 
-      if (yesPrice <= 0 || noPrice <= 0) { skipPrice++; continue; }
-      if (yesPrice >= 99 || noPrice >= 99) { skipPrice++; continue; }
+      // Filter: need real prices between 1¢ and 99¢
+      if (yesPrice <= 0.01 || noPrice <= 0.01) { skipPrice++; continue; }
+      if (yesPrice >= 0.99 || noPrice >= 0.99) { skipPrice++; continue; }
 
       allMarkets.push({
         id: m.ticker || "",
         question,
-        yes_price: yesPrice / 100,
-        no_price: noPrice / 100,
+        yes_price: yesPrice,
+        no_price: noPrice,
         platform: "kalshi" as const,
-        volume: m.volume_24h || m.volume || 0,
+        volume: m.volume_24h || m.volume_fp || m.volume || 0,
         end_date: m.close_time || m.expiration_time,
         ticker: m.ticker,
         category: m.event_ticker || "",
@@ -742,7 +770,7 @@ async function fetchKalshiMarkets(maxPages = 5): Promise<MarketData[]> {
     if (!cursor || markets.length < 1000) break;
   }
 
-  console.log(`Kalshi filter stats: type=${skipType}, question=${skipQ}, price=${skipPrice}`);
+  console.log(`Kalshi filter stats: mve=${skipMve}, type=${skipType}, question=${skipQ}, price=${skipPrice}`);
   console.log(`Kalshi: ${allMarkets.length} single-binary markets after filtering`);
   return allMarkets;
 }
@@ -896,18 +924,27 @@ function findKalshiInternalArbs(markets: MarketData[]): KalshiInternalArb[] {
 // Block them entirely to protect the bankroll.
 
 const TOXIC_TICKER_PATTERNS = [
-  /^KXBTC-/i,           // BTC hourly price range bets — coin flips, -$16.51 lost
-  /^KXETH-/i,           // ETH price range bets — same problem
-  /^KXHIGHT/i,          // High temperature range bets — -$4.69+ lost
-  /^KXLOWT/i,           // Low temperature range bets — unpredictable
-  /^KXATPCHALLENGER/i,  // ATP Challenger tennis — single $21.18 loss
+  /^KXBTC/i,            // ALL BTC price markets
+  /^KXETH/i,            // ALL ETH price markets
+  /^KXSOL/i,            // ALL SOL price markets
+  /^KXDOGE/i,           // ALL DOGE price markets
+  /^KXXRP/i,            // ALL XRP price markets
+  /^KXADA/i,            // ALL ADA price markets
+  /^KXBNB/i,            // ALL BNB price markets
+  /^KXAVAX/i,           // ALL AVAX price markets
+  /^KXHIGH/i,           // ALL high temperature markets (any city)
+  /^KXLOW/i,            // ALL low temperature markets (any city)
+  /^KXATPCHALLENGER/i,  // ATP Challenger tennis
   /^KXWTACHALLENGER/i,  // WTA Challenger tennis
 ];
 
 const TOXIC_QUESTION_PATTERNS = [
-  /temperature.*\d+-\d+°/i,     // exact temp bracket bets
-  /\$[\d,]+(\.\d+)?\s+to\s+/i,  // price range bets ("$68,500 to 68,749.99")
+  /temp(erature)?.*\d+-?\d*°/i,  // any temp bracket bets
+  /\$[\d,]+(\.\d+)?\s+to\s+/i,  // price range bets
   /price.*between/i,             // price between X and Y
+  /\bprice\b.*on\s+\w+\s+\d/i,  // "price on Mar 17" — crypto/commodity price
+  /high temp/i,                  // high temperature markets
+  /low temp/i,                   // low temperature markets
 ];
 
 // Max size for any single trade to prevent catastrophic single-bet losses
@@ -933,47 +970,40 @@ interface KalshiValueBet {
   hoursLeft: number;
 }
 
-function findKalshiValueBets(markets: MarketData[], maxHours = 720): KalshiValueBet[] {  // 30 days — expanded for more opportunities
+function findKalshiValueBets(markets: MarketData[], maxHours = 48): KalshiValueBet[] {  // 48h — cautious, fast resolution
   const now = Date.now();
   const bets: KalshiValueBet[] = [];
   let checked = 0, timeFiltered = 0, toxicFiltered = 0;
 
-  // Debug: log price distribution (expanded to 33¢ for 200% markup)
-  const yesUnder33 = markets.filter(m => m.yes_price <= 0.33).length;
-  const noUnder33 = markets.filter(m => m.no_price <= 0.33).length;
+  // ULTRA-SAFE: Only bet on near-certain outcomes (≤5¢ = 95%+ implied probability)
+  const SAFE_THRESHOLD = 0.05;
+
+  const yesUnder5 = markets.filter(m => m.yes_price <= SAFE_THRESHOLD).length;
+  const noUnder5 = markets.filter(m => m.no_price <= SAFE_THRESHOLD).length;
   const withEndDate = markets.filter(m => !!m.end_date).length;
   const withTicker = markets.filter(m => !!m.ticker).length;
-  console.log(`Value debug: ${markets.length} markets, ${withEndDate} with end_date, ${withTicker} with ticker, ${yesUnder33} yes≤33¢, ${noUnder33} no≤33¢`);
-
-  // Log some sample end dates for debugging
-  const samplesWithEnd = markets.filter(m => m.end_date).slice(0, 3);
-  for (const s of samplesWithEnd) {
-    const msLeft = new Date(s.end_date!).getTime() - now;
-    const h = msLeft / (1000 * 60 * 60);
-    console.log(`Sample: ${s.ticker} end=${s.end_date} hoursLeft=${h.toFixed(1)} yes=${s.yes_price} no=${s.no_price}`);
-  }
+  console.log(`Value debug (safe): ${markets.length} markets, ${withEndDate} with end_date, ${withTicker} with ticker, ${yesUnder5} yes≤5¢, ${noUnder5} no≤5¢`);
 
   for (const m of markets) {
     if (!m.end_date || !m.ticker) continue;
     checked++;
 
-    // Block toxic market types
     if (isToxicMarket(m.ticker, m.question)) { toxicFiltered++; continue; }
 
     const msLeft = new Date(m.end_date).getTime() - now;
     const hoursLeft = msLeft / (1000 * 60 * 60);
     if (hoursLeft < 0.25 || hoursLeft > maxHours) { timeFiltered++; continue; }
 
-    // Buy NO when YES is cheap (≤33¢ = 200%+ markup on NO side)
-    if (m.yes_price <= 0.33 && m.no_price > 0 && m.no_price <= 0.97) {
+    // SAFE: Buy NO when YES is ≤5¢ (opponent priced at 95%+ to lose)
+    if (m.yes_price <= SAFE_THRESHOLD && m.no_price > 0 && m.no_price <= 0.97) {
       const edge = ((1 - m.no_price) / m.no_price) * 100;
       if (edge >= 1) {
         bets.push({ market: m, side: "no", price: m.no_price, edge: Number(edge.toFixed(2)), hoursLeft: Number(hoursLeft.toFixed(1)) });
       }
     }
 
-    // Buy YES when NO is cheap (≤33¢ = 200%+ markup on YES side)
-    if (m.no_price <= 0.33 && m.yes_price > 0 && m.yes_price <= 0.97) {
+    // SAFE: Buy YES when NO is ≤5¢ (priced at 95%+ to win)
+    if (m.no_price <= SAFE_THRESHOLD && m.yes_price > 0 && m.yes_price <= 0.97) {
       const edge = ((1 - m.yes_price) / m.yes_price) * 100;
       if (edge >= 1) {
         bets.push({ market: m, side: "yes", price: m.yes_price, edge: Number(edge.toFixed(2)), hoursLeft: Number(hoursLeft.toFixed(1)) });
@@ -1040,8 +1070,9 @@ async function executeValueBets(
     // Re-check balance
     const currentBal = await fetchKalshiBalance();
     const currentAvailable = Math.max(0, currentBal.balance - minFloor);
-    // Capped FULL SEND — use available cash but never exceed MAX_SINGLE_TRADE_SIZE
-    const tradeSize = Math.min(currentAvailable, MAX_SINGLE_TRADE_SIZE);
+    // CAUTIOUS: max $2 per value bet for safety
+    const CAUTIOUS_MAX = 2.00;
+    const tradeSize = Math.min(currentAvailable, CAUTIOUS_MAX);
     if (tradeSize < 0.10) {
       console.log(`Value bet: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
       break;
@@ -1480,7 +1511,7 @@ Deno.serve(async (req) => {
       // Step 4: Find arbs — CAUTIOUS MODE: only guaranteed-profit trades resolving in 1-2 days
       const [polymarkets, kalshiMarkets] = await Promise.all([
         fetchPolymarkets(500),
-        fetchKalshiMarkets(5),
+        fetchKalshiMarkets(10),
       ]);
 
       const minSpread = (1 - settings.min_confidence) * 100;
@@ -1523,10 +1554,8 @@ Deno.serve(async (req) => {
         const kalshiToExecute = kalshiNew.slice(0, Math.min(slotsAvailable, 3));
 
         if (kalshiToExecute.length === 0) {
-          // CAUTIOUS MODE: no value bets — only guaranteed-profit arbs
-          return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit arbs found. Skipping value bets (cautious mode)." }), {
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
+          // Fall back to ultra-safe value bets (≤5¢ threshold, 48h, $2 max)
+          return await executeValueBets(supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR, slotsAvailable, tradedMarketIds, tradedQuestions);
         }
 
         const kalshiInserts = [];
@@ -1620,10 +1649,8 @@ Deno.serve(async (req) => {
           });
         }
 
-        // CAUTIOUS MODE: no value bets — only guaranteed-profit arbs
-        return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit Kalshi internal arbs. Skipping value bets (cautious mode)." }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        // Fall back to ultra-safe value bets (≤5¢ threshold, 48h, $2 max)
+        return await executeValueBets(supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR, slotsAvailable, tradedMarketIds, tradedQuestions);
       }
 
       // Step 5: Execute real orders on Polymarket + record in DB
@@ -1795,10 +1822,8 @@ Deno.serve(async (req) => {
           });
         }
 
-        // CAUTIOUS MODE: no value bets — only guaranteed-profit arbs
-        return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit arbs available (cautious mode)." }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        // Fall back to ultra-safe value bets (≤5¢ threshold, 48h, $2 max)
+        return await executeValueBets(supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR, slotsAvailable, tradedMarketIds, tradedQuestions);
       }
 
       const { data: trades, error: tradeErr } = await supabase
