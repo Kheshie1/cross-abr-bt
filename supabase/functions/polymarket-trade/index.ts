@@ -10,6 +10,7 @@ const corsHeaders = {
 const GAMMA_URL = "https://gamma-api.polymarket.com";
 const KALSHI_URL = "https://api.elections.kalshi.com/trade-api/v2";
 const CLOB_URL = "https://clob.polymarket.com";
+const MYRIAD_URL = "https://api-v2.myriadprotocol.com";
 
 // ──────────── KALSHI RSA-PSS AUTH ────────────
 
