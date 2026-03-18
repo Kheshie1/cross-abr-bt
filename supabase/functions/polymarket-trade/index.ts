@@ -995,8 +995,8 @@ function findKalshiValueBets(markets: MarketData[], maxHours = 48): KalshiValueB
     if (hoursLeft < 0.25 || hoursLeft > maxHours) { timeFiltered++; continue; }
 
     // HIGH-EDGE: Only take trades at ≤85¢ (≥15¢ edge = $0.30+ profit on $2)
-    const MAX_ENTRY_PRICE = 0.90;
-    const MIN_EDGE_PCT = 10;
+    const MAX_ENTRY_PRICE = 0.97;
+    const MIN_EDGE_PCT = 1;
 
     // Buy NO when YES is ≤5¢ (opponent priced at 95%+ to lose)
     if (m.yes_price <= SAFE_THRESHOLD && m.no_price > 0 && m.no_price <= MAX_ENTRY_PRICE) {
@@ -1075,7 +1075,7 @@ async function executeValueBets(
     const currentBal = await fetchKalshiBalance();
     const currentAvailable = Math.max(0, currentBal.balance - minFloor);
     // CAUTIOUS: max $2 per value bet for safety
-    const CAUTIOUS_MAX = 2.00;
+    const CAUTIOUS_MAX = 10.00;
     const tradeSize = Math.min(currentAvailable, CAUTIOUS_MAX);
     if (tradeSize < 0.10) {
       console.log(`Value bet: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
