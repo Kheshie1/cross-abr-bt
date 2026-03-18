@@ -632,7 +632,7 @@ interface MarketData {
   question: string;
   yes_price: number;
   no_price: number;
-  platform: "polymarket" | "kalshi";
+  platform: "polymarket" | "kalshi" | "myriad";
   volume: number;
   end_date?: string;
   token_id_yes?: string;
