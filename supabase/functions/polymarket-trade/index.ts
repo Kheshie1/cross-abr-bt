@@ -1620,9 +1620,10 @@ Deno.serve(async (req) => {
       console.log(`Auto-trade: sizing $${perTradeSize.toFixed(2)}/trade (${slotsAvailable} slots, $${availableCash.toFixed(2)} available, $${cashBalance.toFixed(2)} total)`);
 
       // Step 4: Find arbs — CAUTIOUS MODE: only guaranteed-profit trades resolving in 1-2 days
-      const [polymarkets, kalshiMarkets] = await Promise.all([
+      const [polymarkets, kalshiMarkets, myriadMarkets] = await Promise.all([
         fetchPolymarkets(500),
         fetchKalshiMarkets(10),
+        fetchMyriadMarkets(5),
       ]);
 
       const minSpread = (1 - settings.min_confidence) * 100;
