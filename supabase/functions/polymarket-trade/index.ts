@@ -776,6 +776,78 @@ async function fetchKalshiMarkets(maxPages = 10): Promise<MarketData[]> {
   return allMarkets;
 }
 
+// ──────────── MYRIAD MARKETS FETCH ────────────
+
+async function fetchMyriadMarkets(maxPages = 5): Promise<MarketData[]> {
+  const allMarkets: MarketData[] = [];
+
+  for (let page = 1; page <= maxPages; page++) {
+    try {
+      const params = new URLSearchParams({
+        state: "open",
+        sort: "volume",
+        order: "desc",
+        page: String(page),
+        limit: "100",
+      });
+
+      const res = await fetch(`${MYRIAD_URL}/markets?${params}`);
+      if (!res.ok) {
+        console.error(`Myriad API error [${res.status}]`);
+        break;
+      }
+      const data = await res.json();
+      const markets = data.data || data.markets || data || [];
+      if (!Array.isArray(markets) || markets.length === 0) break;
+
+      for (const m of markets) {
+        const outcomes = m.outcomes || [];
+        if (outcomes.length < 2) continue;
+
+        // Get prices from outcomes
+        const yesOutcome = outcomes.find((o: any) => 
+          o.title?.toLowerCase() === "yes" || o.title?.toLowerCase() === outcomes[0]?.title?.toLowerCase()
+        ) || outcomes[0];
+        const noOutcome = outcomes.find((o: any) => 
+          o.title?.toLowerCase() === "no" || o.title?.toLowerCase() === outcomes[1]?.title?.toLowerCase()
+        ) || outcomes[1];
+
+        const yesPrice = Number(yesOutcome?.price || 0);
+        const noPrice = Number(noOutcome?.price || 0);
+
+        // Skip invalid prices
+        if (yesPrice <= 0.01 || noPrice <= 0.01) continue;
+        if (yesPrice >= 0.99 || noPrice >= 0.99) continue;
+
+        const question = m.title || m.description || "";
+        if (question.length < 5) continue;
+
+        allMarkets.push({
+          id: String(m.id || m.slug || ""),
+          question,
+          yes_price: yesPrice,
+          no_price: noPrice,
+          platform: "myriad" as const,
+          volume: Number(m.volume || m.volume24h || 0),
+          end_date: m.expiresAt || m.resolvesAt,
+          category: Array.isArray(m.topics) ? m.topics[0] || "" : "",
+        });
+      }
+
+      // Check pagination
+      const pagination = data.pagination;
+      if (pagination && !pagination.hasNext) break;
+      if (!pagination && markets.length < 100) break;
+    } catch (e) {
+      console.error(`Myriad fetch error (page ${page}):`, e);
+      break;
+    }
+  }
+
+  console.log(`Myriad: ${allMarkets.length} open markets fetched`);
+  return allMarkets;
+}
+
 // ──────────── CROSS-PLATFORM ARB FINDER ────────────
 
 interface CrossPlatformArb {
