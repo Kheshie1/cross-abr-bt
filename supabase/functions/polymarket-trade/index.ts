@@ -1631,15 +1631,30 @@ Deno.serve(async (req) => {
       const MIN_MS = 100;                  // 0.1 second
       const MAX_MS = 48 * 60 * 60 * 1000;  // 48 hours — cautious window for fast resolution
 
-      const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.2)
-        .filter((a) => {
-          if (!a.is_arb || a.spread_pct < minSpread) return false;
-          // Only trade markets resolving between 1 min and 2 hours from now
-          const endStr = a.poly_market.end_date || a.kalshi_market.end_date;
-          if (!endStr) return false;
-          const msLeft = new Date(endStr).getTime() - now;
-          return msLeft >= MIN_MS && msLeft <= MAX_MS;
-        });
+      // Find arbs across all platform pairs
+      const timeFilter = (a: CrossPlatformArb) => {
+        if (!a.is_arb || a.spread_pct < minSpread) return false;
+        const endStr = a.poly_market.end_date || a.kalshi_market.end_date;
+        if (!endStr) return false;
+        const msLeft = new Date(endStr).getTime() - now;
+        return msLeft >= MIN_MS && msLeft <= MAX_MS;
+      };
+
+      const allCrossArbs = [
+        ...findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.2),
+        ...findCrossPlatformArbs(polymarkets, myriadMarkets, 0.2),
+        ...findCrossPlatformArbs(kalshiMarkets, myriadMarkets, 0.2),
+      ].filter(timeFilter);
+
+      // Deduplicate
+      const arbSeen = new Set<string>();
+      const arbs: CrossPlatformArb[] = [];
+      for (const a of allCrossArbs.sort((x, y) => y.spread_pct - x.spread_pct)) {
+        const key = `${a.poly_market.id}-${a.kalshi_market.id}`;
+        if (arbSeen.has(key)) continue;
+        arbSeen.add(key);
+        arbs.push(a);
+      }
 
       console.log(`Auto-trade: ${arbs.length} arbs within 1min-2hr window`);
 
