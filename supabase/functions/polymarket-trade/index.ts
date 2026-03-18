@@ -1776,9 +1776,9 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Step 3: FULL SEND — use entire balance on 1 trade
-      const slotsAvailable = 1; // Only 1 trade
-      const perTradeSize = Math.min(availableCash, MAX_SINGLE_TRADE_SIZE); // Capped to prevent catastrophic single-bet losses
+      // Step 3: Size trades — spread across multiple slots
+      const slotsAvailable = Math.min(3, settings.max_open_trades - openPositions); // Up to 3 trades per cycle
+      const perTradeSize = Math.min(availableCash / Math.max(slotsAvailable, 1), MAX_SINGLE_TRADE_SIZE);
 
       if (perTradeSize < 0.10) {
         console.log(`Auto-trade: trade size too small ($${perTradeSize.toFixed(2)})`);
