@@ -1293,7 +1293,7 @@ async function executeValueBets(
     return true;
   });
 
-  const toPlace = newBets.slice(0, 1); // Only 1 trade — full send
+  const toPlace = newBets.slice(0, 3); // Up to 3 value bets per cycle
 
   if (toPlace.length === 0) {
     return new Response(JSON.stringify({ skipped: true, reason: "No new value bets (all already traded)" }), {
