@@ -1799,7 +1799,7 @@ Deno.serve(async (req) => {
       const minSpread = (1 - settings.min_confidence) * 100;
       const now = Date.now();
       const MIN_MS = 100;                  // 0.1 second
-      const MAX_MS = 48 * 60 * 60 * 1000;  // 48 hours — cautious window for fast resolution
+      const MAX_MS = 72 * 60 * 60 * 1000;  // 72 hours — wider window for more opportunities
 
       // Find arbs across all platform pairs
       const timeFilter = (a: CrossPlatformArb) => {
