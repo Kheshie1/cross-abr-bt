@@ -1676,6 +1676,12 @@ Deno.serve(async (req) => {
         });
       }
 
+      // Auto-sync: check if ≥5 trades are past resolution time and settle them
+      const syncResult = await maybeAutoSync(supabase);
+      if (syncResult && syncResult.synced > 0) {
+        console.log(`Auto-sync completed before trade cycle: ${syncResult.synced} settled, $${syncResult.totalPnl.toFixed(2)} P&L`);
+      }
+
       const privateKey = Deno.env.get("POLYMARKET_PRIVATE_KEY");
       if (!privateKey) {
         return new Response(JSON.stringify({ skipped: true, reason: "No private key configured" }), {
