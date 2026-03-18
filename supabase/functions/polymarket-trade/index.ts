@@ -994,18 +994,22 @@ function findKalshiValueBets(markets: MarketData[], maxHours = 48): KalshiValueB
     const hoursLeft = msLeft / (1000 * 60 * 60);
     if (hoursLeft < 0.25 || hoursLeft > maxHours) { timeFiltered++; continue; }
 
-    // SAFE: Buy NO when YES is ≤5¢ (opponent priced at 95%+ to lose)
-    if (m.yes_price <= SAFE_THRESHOLD && m.no_price > 0 && m.no_price <= 0.97) {
+    // HIGH-EDGE: Only take trades at ≤85¢ (≥15¢ edge = $0.30+ profit on $2)
+    const MAX_ENTRY_PRICE = 0.85;
+    const MIN_EDGE_PCT = 15;
+
+    // Buy NO when YES is ≤5¢ (opponent priced at 95%+ to lose)
+    if (m.yes_price <= SAFE_THRESHOLD && m.no_price > 0 && m.no_price <= MAX_ENTRY_PRICE) {
       const edge = ((1 - m.no_price) / m.no_price) * 100;
-      if (edge >= 1) {
+      if (edge >= MIN_EDGE_PCT) {
         bets.push({ market: m, side: "no", price: m.no_price, edge: Number(edge.toFixed(2)), hoursLeft: Number(hoursLeft.toFixed(1)) });
       }
     }
 
-    // SAFE: Buy YES when NO is ≤5¢ (priced at 95%+ to win)
-    if (m.no_price <= SAFE_THRESHOLD && m.yes_price > 0 && m.yes_price <= 0.97) {
+    // Buy YES when NO is ≤5¢ (priced at 95%+ to win)
+    if (m.no_price <= SAFE_THRESHOLD && m.yes_price > 0 && m.yes_price <= MAX_ENTRY_PRICE) {
       const edge = ((1 - m.yes_price) / m.yes_price) * 100;
-      if (edge >= 1) {
+      if (edge >= MIN_EDGE_PCT) {
         bets.push({ market: m, side: "yes", price: m.yes_price, edge: Number(edge.toFixed(2)), hoursLeft: Number(hoursLeft.toFixed(1)) });
       }
     }
