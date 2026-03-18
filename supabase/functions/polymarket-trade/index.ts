@@ -1075,7 +1075,7 @@ async function executeValueBets(
     const currentBal = await fetchKalshiBalance();
     const currentAvailable = Math.max(0, currentBal.balance - minFloor);
     // CAUTIOUS: max $2 per value bet for safety
-    const CAUTIOUS_MAX = 2.00;
+    const CAUTIOUS_MAX = 10.00;
     const tradeSize = Math.min(currentAvailable, CAUTIOUS_MAX);
     if (tradeSize < 0.10) {
       console.log(`Value bet: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
