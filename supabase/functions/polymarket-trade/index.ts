@@ -1375,9 +1375,10 @@ Deno.serve(async (req) => {
       const now = new Date();
       const soon = new Date(now.getTime() + 72 * 60 * 60 * 1000); // 72h window
 
-      const [polymarkets, kalshiMarkets] = await Promise.all([
+      const [polymarkets, kalshiMarkets, myriadMarkets] = await Promise.all([
         fetchPolymarkets(200),
         fetchKalshiMarkets(3),
+        fetchMyriadMarkets(3),
       ]);
 
       const filterSoon = (m: MarketData) => {
@@ -1388,16 +1389,23 @@ Deno.serve(async (req) => {
 
       const soonPoly = polymarkets.filter(filterSoon);
       const soonKalshi = kalshiMarkets.filter(filterSoon);
+      const soonMyriad = myriadMarkets.filter(filterSoon);
 
+      // All cross-platform pairs
       const arbs1 = findCrossPlatformArbs(soonPoly, kalshiMarkets, 0.15);
       const arbs2 = findCrossPlatformArbs(polymarkets, soonKalshi, 0.15);
+      const arbs3 = findCrossPlatformArbs(soonPoly, myriadMarkets, 0.15);
+      const arbs4 = findCrossPlatformArbs(polymarkets, soonMyriad, 0.15);
+      const arbs5 = findCrossPlatformArbs(soonKalshi, myriadMarkets, 0.15);
+      const arbs6 = findCrossPlatformArbs(kalshiMarkets, soonMyriad, 0.15);
 
-      // Deduplicate by poly market id
+      // Deduplicate by source market id
       const seen = new Set<string>();
       const combined: (CrossPlatformArb & { hours_left: number })[] = [];
-      for (const a of [...arbs1, ...arbs2]) {
-        if (seen.has(a.poly_market.id)) continue;
-        seen.add(a.poly_market.id);
+      for (const a of [...arbs1, ...arbs2, ...arbs3, ...arbs4, ...arbs5, ...arbs6]) {
+        const key = `${a.poly_market.id}-${a.kalshi_market.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
         const endStr = a.poly_market.end_date || a.kalshi_market.end_date;
         const endDate = endStr ? new Date(endStr) : now;
         const hoursLeft = Math.max(0, (endDate.getTime() - now.getTime()) / (1000 * 60 * 60));
