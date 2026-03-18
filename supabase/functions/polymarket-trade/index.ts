@@ -1043,19 +1043,27 @@ interface KalshiValueBet {
   hoursLeft: number;
 }
 
-function findKalshiValueBets(markets: MarketData[], maxHours = 48): KalshiValueBet[] {  // 48h — cautious, fast resolution
+function findKalshiValueBets(markets: MarketData[], maxHours = 72): KalshiValueBet[] {  // 72h window for more opportunities
   const now = Date.now();
   const bets: KalshiValueBet[] = [];
   let checked = 0, timeFiltered = 0, toxicFiltered = 0;
 
-  // ULTRA-SAFE: Only bet on near-certain outcomes (≤5¢ = 95%+ implied probability)
-  const SAFE_THRESHOLD = 0.05;
+  // TIER 1: Ultra-safe (≤5¢ opposing = 95%+ implied probability)
+  const TIER1_THRESHOLD = 0.05;
+  // TIER 2: High-confidence (≤10¢ opposing = 90%+ implied probability, shorter window)
+  const TIER2_THRESHOLD = 0.10;
+  // TIER 3: Strong edge (≤15¢ opposing = 85%+ implied probability, very short window only)
+  const TIER3_THRESHOLD = 0.15;
 
-  const yesUnder5 = markets.filter(m => m.yes_price <= SAFE_THRESHOLD).length;
-  const noUnder5 = markets.filter(m => m.no_price <= SAFE_THRESHOLD).length;
+  const yesUnder5 = markets.filter(m => m.yes_price <= TIER1_THRESHOLD).length;
+  const noUnder5 = markets.filter(m => m.no_price <= TIER1_THRESHOLD).length;
+  const yesUnder10 = markets.filter(m => m.yes_price > TIER1_THRESHOLD && m.yes_price <= TIER2_THRESHOLD).length;
+  const noUnder10 = markets.filter(m => m.no_price > TIER1_THRESHOLD && m.no_price <= TIER2_THRESHOLD).length;
+  const yesUnder15 = markets.filter(m => m.yes_price > TIER2_THRESHOLD && m.yes_price <= TIER3_THRESHOLD).length;
+  const noUnder15 = markets.filter(m => m.no_price > TIER2_THRESHOLD && m.no_price <= TIER3_THRESHOLD).length;
   const withEndDate = markets.filter(m => !!m.end_date).length;
   const withTicker = markets.filter(m => !!m.ticker).length;
-  console.log(`Value debug (safe): ${markets.length} markets, ${withEndDate} with end_date, ${withTicker} with ticker, ${yesUnder5} yes≤5¢, ${noUnder5} no≤5¢`);
+  console.log(`Value debug: ${markets.length} markets, ${withEndDate} end_date, ${withTicker} ticker | T1(≤5¢): yes=${yesUnder5} no=${noUnder5} | T2(≤10¢): yes=${yesUnder10} no=${noUnder10} | T3(≤15¢): yes=${yesUnder15} no=${noUnder15}`);
 
   for (const m of markets) {
     if (!m.end_date || !m.ticker) continue;
@@ -1067,24 +1075,40 @@ function findKalshiValueBets(markets: MarketData[], maxHours = 48): KalshiValueB
     const hoursLeft = msLeft / (1000 * 60 * 60);
     if (hoursLeft < 0.25 || hoursLeft > maxHours) { timeFiltered++; continue; }
 
-    // HIGH-EDGE: Only take trades at ≤85¢ (≥15¢ edge = $0.30+ profit on $2)
-    const MAX_ENTRY_PRICE = 0.97;
-    const MIN_EDGE_PCT = 1;
+    // Determine tier and constraints based on opposing price
+    // Lower opposing price = higher confidence = more relaxed constraints
+    const MAX_ENTRY_PRICE = 0.93; // Never pay more than 93¢ (minimum 7% edge)
+    const MIN_EDGE_PCT = 5; // Minimum 5% edge to be worth the risk
 
-    // Buy NO when YES is ≤5¢ (opponent priced at 95%+ to lose)
-    if (m.yes_price <= SAFE_THRESHOLD && m.no_price > 0 && m.no_price <= MAX_ENTRY_PRICE) {
-      const edge = ((1 - m.no_price) / m.no_price) * 100;
-      if (edge >= MIN_EDGE_PCT) {
-        bets.push({ market: m, side: "no", price: m.no_price, edge: Number(edge.toFixed(2)), hoursLeft: Number(hoursLeft.toFixed(1)) });
-      }
+    // Check both sides
+    const sides: Array<{ side: "yes" | "no"; oppPrice: number; entryPrice: number }> = [];
+    
+    // Buy NO when YES is cheap (opponent likely to lose)
+    if (m.yes_price <= TIER3_THRESHOLD && m.no_price > 0 && m.no_price <= MAX_ENTRY_PRICE) {
+      sides.push({ side: "no", oppPrice: m.yes_price, entryPrice: m.no_price });
+    }
+    // Buy YES when NO is cheap (priced to win)
+    if (m.no_price <= TIER3_THRESHOLD && m.yes_price > 0 && m.yes_price <= MAX_ENTRY_PRICE) {
+      sides.push({ side: "yes", oppPrice: m.no_price, entryPrice: m.yes_price });
     }
 
-    // Buy YES when NO is ≤5¢ (priced at 95%+ to win)
-    if (m.no_price <= SAFE_THRESHOLD && m.yes_price > 0 && m.yes_price <= MAX_ENTRY_PRICE) {
-      const edge = ((1 - m.yes_price) / m.yes_price) * 100;
-      if (edge >= MIN_EDGE_PCT) {
-        bets.push({ market: m, side: "yes", price: m.yes_price, edge: Number(edge.toFixed(2)), hoursLeft: Number(hoursLeft.toFixed(1)) });
+    for (const { side, oppPrice, entryPrice } of sides) {
+      const edge = ((1 - entryPrice) / entryPrice) * 100;
+      if (edge < MIN_EDGE_PCT) continue;
+
+      // Tier-based time constraints (higher risk = shorter window)
+      let maxAllowedHours: number;
+      if (oppPrice <= TIER1_THRESHOLD) {
+        maxAllowedHours = 72; // Ultra-safe: 3 days OK
+      } else if (oppPrice <= TIER2_THRESHOLD) {
+        maxAllowedHours = 24; // High-confidence: 1 day max
+      } else {
+        maxAllowedHours = 6; // Strong edge: 6 hours max (imminent resolution)
       }
+
+      if (hoursLeft > maxAllowedHours) continue;
+
+      bets.push({ market: m, side, price: entryPrice, edge: Number(edge.toFixed(2)), hoursLeft: Number(hoursLeft.toFixed(1)) });
     }
   }
 
@@ -1097,6 +1121,7 @@ function findKalshiValueBets(markets: MarketData[], maxHours = 48): KalshiValueB
 
   console.log(`Value scan: ${checked} checked, ${toxicFiltered} toxic-filtered, ${timeFiltered} time-filtered, ${bets.length} candidates`);
 
+  // Sort by edge-per-hour (prioritize fast + high edge)
   return Array.from(seen.values()).sort((a, b) => {
     return (b.edge / Math.max(b.hoursLeft, 0.5)) - (a.edge / Math.max(a.hoursLeft, 0.5));
   });
