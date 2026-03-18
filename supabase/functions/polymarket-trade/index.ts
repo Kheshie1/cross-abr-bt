@@ -10,6 +10,7 @@ const corsHeaders = {
 const GAMMA_URL = "https://gamma-api.polymarket.com";
 const KALSHI_URL = "https://api.elections.kalshi.com/trade-api/v2";
 const CLOB_URL = "https://clob.polymarket.com";
+const MYRIAD_URL = "https://api-v2.myriadprotocol.com";
 
 // ──────────── KALSHI RSA-PSS AUTH ────────────
 
@@ -631,7 +632,7 @@ interface MarketData {
   question: string;
   yes_price: number;
   no_price: number;
-  platform: "polymarket" | "kalshi";
+  platform: "polymarket" | "kalshi" | "myriad";
   volume: number;
   end_date?: string;
   token_id_yes?: string;
@@ -775,11 +776,83 @@ async function fetchKalshiMarkets(maxPages = 10): Promise<MarketData[]> {
   return allMarkets;
 }
 
+// ──────────── MYRIAD MARKETS FETCH ────────────
+
+async function fetchMyriadMarkets(maxPages = 5): Promise<MarketData[]> {
+  const allMarkets: MarketData[] = [];
+
+  for (let page = 1; page <= maxPages; page++) {
+    try {
+      const params = new URLSearchParams({
+        state: "open",
+        sort: "volume",
+        order: "desc",
+        page: String(page),
+        limit: "100",
+      });
+
+      const res = await fetch(`${MYRIAD_URL}/markets?${params}`);
+      if (!res.ok) {
+        console.error(`Myriad API error [${res.status}]`);
+        break;
+      }
+      const data = await res.json();
+      const markets = data.data || data.markets || data || [];
+      if (!Array.isArray(markets) || markets.length === 0) break;
+
+      for (const m of markets) {
+        const outcomes = m.outcomes || [];
+        if (outcomes.length < 2) continue;
+
+        // Get prices from outcomes
+        const yesOutcome = outcomes.find((o: any) => 
+          o.title?.toLowerCase() === "yes" || o.title?.toLowerCase() === outcomes[0]?.title?.toLowerCase()
+        ) || outcomes[0];
+        const noOutcome = outcomes.find((o: any) => 
+          o.title?.toLowerCase() === "no" || o.title?.toLowerCase() === outcomes[1]?.title?.toLowerCase()
+        ) || outcomes[1];
+
+        const yesPrice = Number(yesOutcome?.price || 0);
+        const noPrice = Number(noOutcome?.price || 0);
+
+        // Skip invalid prices
+        if (yesPrice <= 0.01 || noPrice <= 0.01) continue;
+        if (yesPrice >= 0.99 || noPrice >= 0.99) continue;
+
+        const question = m.title || m.description || "";
+        if (question.length < 5) continue;
+
+        allMarkets.push({
+          id: String(m.id || m.slug || ""),
+          question,
+          yes_price: yesPrice,
+          no_price: noPrice,
+          platform: "myriad" as const,
+          volume: Number(m.volume || m.volume24h || 0),
+          end_date: m.expiresAt || m.resolvesAt,
+          category: Array.isArray(m.topics) ? m.topics[0] || "" : "",
+        });
+      }
+
+      // Check pagination
+      const pagination = data.pagination;
+      if (pagination && !pagination.hasNext) break;
+      if (!pagination && markets.length < 100) break;
+    } catch (e) {
+      console.error(`Myriad fetch error (page ${page}):`, e);
+      break;
+    }
+  }
+
+  console.log(`Myriad: ${allMarkets.length} open markets fetched`);
+  return allMarkets;
+}
+
 // ──────────── CROSS-PLATFORM ARB FINDER ────────────
 
 interface CrossPlatformArb {
-  poly_market: MarketData;
-  kalshi_market: MarketData;
+  poly_market: MarketData;  // "source" market (any platform)
+  kalshi_market: MarketData;  // "target" market (any platform)
   match_score: number;
   best_strategy: string;
   buy_yes_platform: string;
@@ -1254,14 +1327,30 @@ Deno.serve(async (req) => {
 
     // ──── SCAN ────
     if (action === "scan") {
-      const [polymarkets, kalshiMarkets] = await Promise.all([
+      const [polymarkets, kalshiMarkets, myriadMarkets] = await Promise.all([
         fetchPolymarkets(200),
         fetchKalshiMarkets(3),
+        fetchMyriadMarkets(3),
       ]);
 
-      console.log(`Scan: ${polymarkets.length} Poly × ${kalshiMarkets.length} Kalshi`);
+      console.log(`Scan: ${polymarkets.length} Poly × ${kalshiMarkets.length} Kalshi × ${myriadMarkets.length} Myriad`);
 
-      const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.15).slice(0, 50);
+      // Cross-platform arbs across all pairs
+      const arbs1 = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.15);
+      const arbs2 = findCrossPlatformArbs(polymarkets, myriadMarkets, 0.15);
+      const arbs3 = findCrossPlatformArbs(kalshiMarkets, myriadMarkets, 0.15);
+
+      // Deduplicate by source market id
+      const seen = new Set<string>();
+      const allArbs: CrossPlatformArb[] = [];
+      for (const a of [...arbs1, ...arbs2, ...arbs3].sort((a, b) => b.spread_pct - a.spread_pct)) {
+        const key = `${a.poly_market.id}-${a.kalshi_market.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        allArbs.push(a);
+      }
+
+      const arbs = allArbs.slice(0, 50);
       const realArbCount = arbs.filter((a) => a.is_arb).length;
 
       console.log(`Results: ${arbs.length} matches, ${realArbCount} real arbs`);
@@ -1275,6 +1364,7 @@ Deno.serve(async (req) => {
           real_arb_count: realArbCount,
           poly_count: polymarkets.length,
           kalshi_count: kalshiMarkets.length,
+          myriad_count: myriadMarkets.length,
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
@@ -1285,9 +1375,10 @@ Deno.serve(async (req) => {
       const now = new Date();
       const soon = new Date(now.getTime() + 72 * 60 * 60 * 1000); // 72h window
 
-      const [polymarkets, kalshiMarkets] = await Promise.all([
+      const [polymarkets, kalshiMarkets, myriadMarkets] = await Promise.all([
         fetchPolymarkets(200),
         fetchKalshiMarkets(3),
+        fetchMyriadMarkets(3),
       ]);
 
       const filterSoon = (m: MarketData) => {
@@ -1298,16 +1389,23 @@ Deno.serve(async (req) => {
 
       const soonPoly = polymarkets.filter(filterSoon);
       const soonKalshi = kalshiMarkets.filter(filterSoon);
+      const soonMyriad = myriadMarkets.filter(filterSoon);
 
+      // All cross-platform pairs
       const arbs1 = findCrossPlatformArbs(soonPoly, kalshiMarkets, 0.15);
       const arbs2 = findCrossPlatformArbs(polymarkets, soonKalshi, 0.15);
+      const arbs3 = findCrossPlatformArbs(soonPoly, myriadMarkets, 0.15);
+      const arbs4 = findCrossPlatformArbs(polymarkets, soonMyriad, 0.15);
+      const arbs5 = findCrossPlatformArbs(soonKalshi, myriadMarkets, 0.15);
+      const arbs6 = findCrossPlatformArbs(kalshiMarkets, soonMyriad, 0.15);
 
-      // Deduplicate by poly market id
+      // Deduplicate by source market id
       const seen = new Set<string>();
       const combined: (CrossPlatformArb & { hours_left: number })[] = [];
-      for (const a of [...arbs1, ...arbs2]) {
-        if (seen.has(a.poly_market.id)) continue;
-        seen.add(a.poly_market.id);
+      for (const a of [...arbs1, ...arbs2, ...arbs3, ...arbs4, ...arbs5, ...arbs6]) {
+        const key = `${a.poly_market.id}-${a.kalshi_market.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
         const endStr = a.poly_market.end_date || a.kalshi_market.end_date;
         const endDate = endStr ? new Date(endStr) : now;
         const hoursLeft = Math.max(0, (endDate.getTime() - now.getTime()) / (1000 * 60 * 60));
@@ -1522,9 +1620,10 @@ Deno.serve(async (req) => {
       console.log(`Auto-trade: sizing $${perTradeSize.toFixed(2)}/trade (${slotsAvailable} slots, $${availableCash.toFixed(2)} available, $${cashBalance.toFixed(2)} total)`);
 
       // Step 4: Find arbs — CAUTIOUS MODE: only guaranteed-profit trades resolving in 1-2 days
-      const [polymarkets, kalshiMarkets] = await Promise.all([
+      const [polymarkets, kalshiMarkets, myriadMarkets] = await Promise.all([
         fetchPolymarkets(500),
         fetchKalshiMarkets(10),
+        fetchMyriadMarkets(5),
       ]);
 
       const minSpread = (1 - settings.min_confidence) * 100;
@@ -1532,15 +1631,30 @@ Deno.serve(async (req) => {
       const MIN_MS = 100;                  // 0.1 second
       const MAX_MS = 48 * 60 * 60 * 1000;  // 48 hours — cautious window for fast resolution
 
-      const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.2)
-        .filter((a) => {
-          if (!a.is_arb || a.spread_pct < minSpread) return false;
-          // Only trade markets resolving between 1 min and 2 hours from now
-          const endStr = a.poly_market.end_date || a.kalshi_market.end_date;
-          if (!endStr) return false;
-          const msLeft = new Date(endStr).getTime() - now;
-          return msLeft >= MIN_MS && msLeft <= MAX_MS;
-        });
+      // Find arbs across all platform pairs
+      const timeFilter = (a: CrossPlatformArb) => {
+        if (!a.is_arb || a.spread_pct < minSpread) return false;
+        const endStr = a.poly_market.end_date || a.kalshi_market.end_date;
+        if (!endStr) return false;
+        const msLeft = new Date(endStr).getTime() - now;
+        return msLeft >= MIN_MS && msLeft <= MAX_MS;
+      };
+
+      const allCrossArbs = [
+        ...findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.2),
+        ...findCrossPlatformArbs(polymarkets, myriadMarkets, 0.2),
+        ...findCrossPlatformArbs(kalshiMarkets, myriadMarkets, 0.2),
+      ].filter(timeFilter);
+
+      // Deduplicate
+      const arbSeen = new Set<string>();
+      const arbs: CrossPlatformArb[] = [];
+      for (const a of allCrossArbs.sort((x, y) => y.spread_pct - x.spread_pct)) {
+        const key = `${a.poly_market.id}-${a.kalshi_market.id}`;
+        if (arbSeen.has(key)) continue;
+        arbSeen.add(key);
+        arbs.push(a);
+      }
 
       console.log(`Auto-trade: ${arbs.length} arbs within 1min-2hr window`);
 
