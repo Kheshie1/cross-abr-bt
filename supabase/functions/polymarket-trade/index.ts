@@ -1327,14 +1327,30 @@ Deno.serve(async (req) => {
 
     // ──── SCAN ────
     if (action === "scan") {
-      const [polymarkets, kalshiMarkets] = await Promise.all([
+      const [polymarkets, kalshiMarkets, myriadMarkets] = await Promise.all([
         fetchPolymarkets(200),
         fetchKalshiMarkets(3),
+        fetchMyriadMarkets(3),
       ]);
 
-      console.log(`Scan: ${polymarkets.length} Poly × ${kalshiMarkets.length} Kalshi`);
+      console.log(`Scan: ${polymarkets.length} Poly × ${kalshiMarkets.length} Kalshi × ${myriadMarkets.length} Myriad`);
 
-      const arbs = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.15).slice(0, 50);
+      // Cross-platform arbs across all pairs
+      const arbs1 = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.15);
+      const arbs2 = findCrossPlatformArbs(polymarkets, myriadMarkets, 0.15);
+      const arbs3 = findCrossPlatformArbs(kalshiMarkets, myriadMarkets, 0.15);
+
+      // Deduplicate by source market id
+      const seen = new Set<string>();
+      const allArbs: CrossPlatformArb[] = [];
+      for (const a of [...arbs1, ...arbs2, ...arbs3].sort((a, b) => b.spread_pct - a.spread_pct)) {
+        const key = `${a.poly_market.id}-${a.kalshi_market.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        allArbs.push(a);
+      }
+
+      const arbs = allArbs.slice(0, 50);
       const realArbCount = arbs.filter((a) => a.is_arb).length;
 
       console.log(`Results: ${arbs.length} matches, ${realArbCount} real arbs`);
@@ -1348,6 +1364,7 @@ Deno.serve(async (req) => {
           real_arb_count: realArbCount,
           poly_count: polymarkets.length,
           kalshi_count: kalshiMarkets.length,
+          myriad_count: myriadMarkets.length,
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
