@@ -851,8 +851,8 @@ async function fetchMyriadMarkets(maxPages = 5): Promise<MarketData[]> {
 // ──────────── CROSS-PLATFORM ARB FINDER ────────────
 
 interface CrossPlatformArb {
-  poly_market: MarketData;
-  kalshi_market: MarketData;
+  poly_market: MarketData;  // "source" market (any platform)
+  kalshi_market: MarketData;  // "target" market (any platform)
   match_score: number;
   best_strategy: string;
   buy_yes_platform: string;
