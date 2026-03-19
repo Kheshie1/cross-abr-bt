@@ -1045,7 +1045,7 @@ const TOXIC_QUESTION_PATTERNS = [
 ];
 
 // Max size for any single trade to prevent catastrophic single-bet losses
-const MAX_SINGLE_TRADE_SIZE = 5.00;
+const MAX_SINGLE_TRADE_SIZE = 2.00; // Reduced from $5 to $2 — smaller bets, less downside per loss
 
 function isToxicMarket(ticker: string, question: string): boolean {
   for (const pat of TOXIC_TICKER_PATTERNS) {
