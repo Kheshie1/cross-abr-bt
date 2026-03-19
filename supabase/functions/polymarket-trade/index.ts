@@ -997,31 +997,55 @@ function findKalshiInternalArbs(markets: MarketData[]): KalshiInternalArb[] {
 // Block them entirely to protect the bankroll.
 
 const TOXIC_TICKER_PATTERNS = [
-  /^KXBTC/i,            // ALL BTC price markets
-  /^KXETH/i,            // ALL ETH price markets
-  /^KXSOL/i,            // ALL SOL price markets
-  /^KXDOGE/i,           // ALL DOGE price markets
-  /^KXXRP/i,            // ALL XRP price markets
-  /^KXADA/i,            // ALL ADA price markets
-  /^KXBNB/i,            // ALL BNB price markets
-  /^KXAVAX/i,           // ALL AVAX price markets
-  /^KXHIGH/i,           // ALL high temperature markets (any city)
-  /^KXLOW/i,            // ALL low temperature markets (any city)
-  /^KXATPCHALLENGER/i,  // ATP Challenger tennis
-  /^KXWTACHALLENGER/i,  // WTA Challenger tennis
+  // Crypto price markets — unpredictable outcomes
+  /^KXBTC/i, /^KXETH/i, /^KXSOL/i, /^KXDOGE/i, /^KXXRP/i,
+  /^KXADA/i, /^KXBNB/i, /^KXAVAX/i,
+  // Temperature markets
+  /^KXHIGH/i, /^KXLOW/i,
+  // Tennis challenger — low liquidity
+  /^KXATPCHALLENGER/i, /^KXWTACHALLENGER/i,
+  // ─── NEW: Categories that caused massive losses ───
+  // S&P 500 / Nasdaq index range & above/below bets
+  /^KXINX/i, /^KXINXU/i, /^KXNASDAQ/i,
+  // Forex — unpredictable directional bets
+  /^KXEURUSD/i, /^KXUSDJPY/i, /^KXGBPUSD/i, /^KXUSDCAD/i, /^KXUSDCHF/i, /^KXAUDUSD/i, /^KXNZDUSD/i,
+  // Media mention markets — "will announcer say X" is pure coin-flip
+  /^KXNBAMENTION/i, /^KXNCAABMENTION/i, /^KXNFLMENTION/i, /^KXNHLMENTION/i,
+  /^KXFOXNEWSMENTION/i, /^KXMSNBCMENTION/i, /^KXCNNMENTION/i,
+  /^KXMENTION/i, /^KXTRUMPMENTION/i, /^KXHEGSETHMENTION/i, /^KXBIDENMENTION/i,
+  // Spotify stream count — impossible to predict
+  /^KXSPOTSTREAMGLOBAL/i, /^KXSPOTSTREAM/i,
+  // YouTube / social view counts
+  /^KXYTVIEW/i, /^KXTIKTOK/i,
+  // Dow Jones
+  /^KXDJI/i, /^KXDJIU/i,
+  // Russell 2000
+  /^KXRUT/i, /^KXRUTU/i,
+  // Gold / Oil / Commodity prices
+  /^KXGOLD/i, /^KXOIL/i, /^KXWTI/i, /^KXSILVER/i,
 ];
 
 const TOXIC_QUESTION_PATTERNS = [
-  /temp(erature)?.*\d+-?\d*°/i,  // any temp bracket bets
-  /\$[\d,]+(\.\d+)?\s+to\s+/i,  // price range bets
-  /price.*between/i,             // price between X and Y
-  /\bprice\b.*on\s+\w+\s+\d/i,  // "price on Mar 17" — crypto/commodity price
-  /high temp/i,                  // high temperature markets
-  /low temp/i,                   // low temperature markets
+  /temp(erature)?.*\d+-?\d*°/i,     // any temp bracket bets
+  /\$[\d,]+(\.\d+)?\s+to\s+/i,     // price range bets
+  /price.*between/i,                // price between X and Y
+  /\bprice\b.*on\s+\w+\s+\d/i,     // "price on Mar 17" — crypto/commodity price
+  /high temp/i,                     // high temperature markets
+  /low temp/i,                      // low temperature markets
+  // ─── NEW: Block by question text as a safety net ───
+  /S&P\s*500/i,                     // S&P 500 in any form
+  /Nasdaq/i,                        // Nasdaq in any form
+  /\bannouncer/i,                   // "will the announcers say"
+  /\bstreams?\b.*spotify/i,         // Spotify stream counts
+  /spotify.*\bstreams?\b/i,         // reversed order
+  /EUR\/USD|USD\/JPY|GBP\/USD/i,    // forex pairs
+  /\bopen price\b/i,                // "open price" = forex/stock direction
+  /Dow Jones|Russell 2000/i,        // other indexes
+  /how many streams/i,              // stream count bets
 ];
 
 // Max size for any single trade to prevent catastrophic single-bet losses
-const MAX_SINGLE_TRADE_SIZE = 5.00;
+const MAX_SINGLE_TRADE_SIZE = 2.00; // Reduced from $5 to $2 — smaller bets, less downside per loss
 
 function isToxicMarket(ticker: string, question: string): boolean {
   for (const pat of TOXIC_TICKER_PATTERNS) {
@@ -1077,8 +1101,8 @@ function findKalshiValueBets(markets: MarketData[], maxHours = 72): KalshiValueB
 
     // Determine tier and constraints based on opposing price
     // Lower opposing price = higher confidence = more relaxed constraints
-    const MAX_ENTRY_PRICE = 0.93; // Never pay more than 93¢ (minimum 7% edge)
-    const MIN_EDGE_PCT = 5; // Minimum 5% edge to be worth the risk
+    const MAX_ENTRY_PRICE = 0.85; // Never pay more than 85¢ (minimum 17.6% edge — need ~85% win rate, achievable)
+    const MIN_EDGE_PCT = 15; // Minimum 15% edge to justify the risk
 
     // Check both sides
     const sides: Array<{ side: "yes" | "no"; oppPrice: number; entryPrice: number }> = [];
