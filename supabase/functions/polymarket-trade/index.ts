@@ -1101,8 +1101,8 @@ function findKalshiValueBets(markets: MarketData[], maxHours = 72): KalshiValueB
 
     // Determine tier and constraints based on opposing price
     // Lower opposing price = higher confidence = more relaxed constraints
-    const MAX_ENTRY_PRICE = 0.93; // Never pay more than 93¢ (minimum 7% edge)
-    const MIN_EDGE_PCT = 5; // Minimum 5% edge to be worth the risk
+    const MAX_ENTRY_PRICE = 0.85; // Never pay more than 85¢ (minimum 17.6% edge — need ~85% win rate, achievable)
+    const MIN_EDGE_PCT = 15; // Minimum 15% edge to justify the risk
 
     // Check both sides
     const sides: Array<{ side: "yes" | "no"; oppPrice: number; entryPrice: number }> = [];
