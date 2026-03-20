@@ -1032,7 +1032,7 @@ const TOXIC_QUESTION_PATTERNS = [
   /\bprice\b.*on\s+\w+\s+\d/i,     // "price on Mar 17" — crypto/commodity price
   /high temp/i,                     // high temperature markets
   /low temp/i,                      // low temperature markets
-  // ─── NEW: Block by question text as a safety net ───
+  // ─── Block by question text as a safety net ───
   /S&P\s*500/i,                     // S&P 500 in any form
   /Nasdaq/i,                        // Nasdaq in any form
   /\bannouncer/i,                   // "will the announcers say"
@@ -1042,6 +1042,23 @@ const TOXIC_QUESTION_PATTERNS = [
   /\bopen price\b/i,                // "open price" = forex/stock direction
   /Dow Jones|Russell 2000/i,        // other indexes
   /how many streams/i,              // stream count bets
+  // ─── NEW: Additional patterns that caused losses ───
+  /\bannouncer.+say\b/i,            // "what will the announcers say"
+  /\bwill.+say\b.*\bgame\b/i,      // "will X say during game"
+  /\bsay during\b/i,               // "say during" pattern
+  /\bmention\b/i,                   // any mention markets
+  /\bwitness.+say\b/i,             // congressional hearing mention bets
+  /\bFox News\b/i,                  // Fox News mention bets
+  /\bHannity\b/i,                   // Hannity mention bets
+  /\bMSNBC\b/i,                     // MSNBC mention bets
+  /\bCNN\b/i,                       // CNN mention bets
+  /\bPrairie View\b/i,              // specific losing market
+  /\bopen price be\b/i,             // forex "open price be above/below"
+  /\bbe between\b.*\bat\b/i,        // "be between X and Y at"
+  /\bbe above\b.*\bat\b.*\bEDT\b/i, // "be above X at Y EDT"
+  /\bbe below\b.*\bat\b.*\bEDT\b/i, // "be below X at Y EDT"
+  /\btop song\b/i,                  // top song on Spotify
+  /\bDaily Top Songs\b/i,           // Spotify daily top songs
 ];
 
 // Max size for any single trade to prevent catastrophic single-bet losses
