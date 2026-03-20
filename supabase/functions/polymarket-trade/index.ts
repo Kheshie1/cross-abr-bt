@@ -425,35 +425,42 @@ async function proxiedFetch(url: string, init: RequestInit): Promise<Response> {
     proxyUrl = await getProxyUrlFromEvoxt();
   }
 
-  if (!proxyUrl) {
-    console.log("No proxy available, using direct connection");
-    return fetch(url, init);
+  // Try proxy first
+  if (proxyUrl) {
+    try {
+      const proxy = new URL(proxyUrl);
+      const target = new URL(url);
+
+      const proxyAuth = proxy.username
+        ? `Basic ${btoa(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`)}`
+        : undefined;
+
+      const headers = new Headers(init.headers);
+      headers.set("Host", target.host);
+
+      const proxyHeaders: Record<string, string> = {};
+      headers.forEach((v, k) => { proxyHeaders[k] = v; });
+      if (proxyAuth) proxyHeaders["Proxy-Authorization"] = proxyAuth;
+
+      const res = await fetch(url, {
+        ...init,
+        headers: proxyHeaders,
+        // @ts-ignore - Deno supports client proxy
+        client: Deno.createHttpClient({
+          proxy: { url: `${proxy.protocol}//${proxy.host}`, basicAuth: proxy.username ? { username: decodeURIComponent(proxy.username), password: decodeURIComponent(proxy.password) } : undefined },
+        }),
+      });
+
+      return res;
+    } catch (proxyErr) {
+      console.warn(`Proxy failed (${proxyUrl}): ${proxyErr}. Trying direct connection...`);
+      // Fall through to direct connection
+    }
   }
 
-  const proxy = new URL(proxyUrl);
-  const target = new URL(url);
-
-  const proxyAuth = proxy.username
-    ? `Basic ${btoa(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`)}`
-    : undefined;
-
-  const headers = new Headers(init.headers);
-  headers.set("Host", target.host);
-
-  const proxyHeaders: Record<string, string> = {};
-  headers.forEach((v, k) => { proxyHeaders[k] = v; });
-  if (proxyAuth) proxyHeaders["Proxy-Authorization"] = proxyAuth;
-
-  const res = await fetch(url, {
-    ...init,
-    headers: proxyHeaders,
-    // @ts-ignore - Deno supports client proxy
-    client: Deno.createHttpClient({
-      proxy: { url: `${proxy.protocol}//${proxy.host}`, basicAuth: proxy.username ? { username: decodeURIComponent(proxy.username), password: decodeURIComponent(proxy.password) } : undefined },
-    }),
-  });
-
-  return res;
+  // Direct connection fallback (may be geo-blocked but worth trying)
+  console.log("Using direct connection to Polymarket CLOB");
+  return fetch(url, init);
 }
 
 // ──────────── ORDER SIGNING & PLACEMENT ────────────
