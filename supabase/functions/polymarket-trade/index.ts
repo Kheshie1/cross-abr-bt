@@ -2171,8 +2171,11 @@ Deno.serve(async (req) => {
           });
         }
 
-        // Fall back to ultra-safe value bets (≤5¢ threshold, 48h, $2 max)
-        return await executeValueBets(supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR, slotsAvailable, tradedMarketIds, tradedQuestions);
+        // VALUE BETTING DISABLED — it was the source of ALL losses.
+        console.log(`Auto-trade: no arbs found (fallback path). Value betting DISABLED.`);
+        return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit arbs found (fallback). Value betting disabled." }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
 
       const { data: trades, error: tradeErr } = await supabase
