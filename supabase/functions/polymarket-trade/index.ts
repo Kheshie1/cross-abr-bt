@@ -1875,8 +1875,12 @@ Deno.serve(async (req) => {
         const kalshiToExecute = kalshiNew.slice(0, Math.min(slotsAvailable, 3));
 
         if (kalshiToExecute.length === 0) {
-          // Fall back to ultra-safe value bets (≤5¢ threshold, 48h, $2 max)
-          return await executeValueBets(supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR, slotsAvailable, tradedMarketIds, tradedQuestions);
+          // VALUE BETTING DISABLED — it was the source of ALL losses.
+          // Only guaranteed-profit arbs are allowed.
+          console.log(`Auto-trade: no arbs found. Value betting DISABLED to protect bankroll.`);
+          return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit arbs found. Value betting disabled to protect bankroll." }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
         }
 
         const kalshiInserts = [];
