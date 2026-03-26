@@ -1081,6 +1081,102 @@ function isToxicMarket(ticker: string, question: string): boolean {
   return false;
 }
 
+// ──────────── KALSHI SPORTS GAME WINNER STRATEGY ────────────
+// Conservative: only NBA/NFL game winners at cheap prices, max $2/trade
+
+interface SportsGameWinnerBet {
+  market: MarketData;
+  side: "yes" | "no";
+  price: number;
+  edge: number;
+  hoursLeft: number;
+  sport: string;
+}
+
+const SPORTS_TICKER_PATTERNS: Array<{ pattern: RegExp; sport: string }> = [
+  { pattern: /^KXNBA/i, sport: "NBA" },
+  { pattern: /^KXNFL/i, sport: "NFL" },
+];
+
+const SPORTS_QUESTION_PATTERNS: Array<{ pattern: RegExp; sport: string }> = [
+  { pattern: /\bNBA\b.*\b(win|beat|defeat|vs\.?|game)\b/i, sport: "NBA" },
+  { pattern: /\bNFL\b.*\b(win|beat|defeat|vs\.?|game)\b/i, sport: "NFL" },
+  { pattern: /\b(Lakers|Celtics|Warriors|Bucks|76ers|Nuggets|Heat|Knicks|Suns|Mavericks|Cavaliers|Thunder|Timberwolves|Pacers|Clippers|Hawks|Bulls|Nets|Rockets|Grizzlies|Kings|Pelicans|Magic|Raptors|Spurs|Trail Blazers|Pistons|Hornets|Jazz|Wizards)\b.*\b(win|beat|game)\b/i, sport: "NBA" },
+  { pattern: /\b(Chiefs|49ers|Eagles|Bills|Cowboys|Ravens|Lions|Dolphins|Bengals|Texans|Jets|Packers|Steelers|Broncos|Chargers|Vikings|Seahawks|Commanders|Bears|Saints|Falcons|Rams|Jaguars|Browns|Cardinals|Titans|Raiders|Colts|Panthers|Giants|Buccaneers)\b.*\b(win|beat|game)\b/i, sport: "NFL" },
+];
+
+function identifySportsGameWinner(ticker: string, question: string): string | null {
+  // Check ticker patterns first
+  for (const { pattern, sport } of SPORTS_TICKER_PATTERNS) {
+    if (pattern.test(ticker)) {
+      // Make sure it's a game winner market, not mentions/props
+      if (/mention/i.test(ticker) || /mention/i.test(question)) return null;
+      if (/points|rebounds|assists|passing|rushing|receiving|tackles|sacks/i.test(question)) return null;
+      return sport;
+    }
+  }
+  // Check question patterns
+  for (const { pattern, sport } of SPORTS_QUESTION_PATTERNS) {
+    if (pattern.test(question)) {
+      if (/mention/i.test(question)) return null;
+      if (/points|rebounds|assists|passing|rushing|receiving|tackles|sacks/i.test(question)) return null;
+      return sport;
+    }
+  }
+  return null;
+}
+
+function findSportsGameWinnerBets(markets: MarketData[], maxHours = 48): SportsGameWinnerBet[] {
+  const now = Date.now();
+  const bets: SportsGameWinnerBet[] = [];
+  let checked = 0, sportMatches = 0;
+
+  const MAX_ENTRY_PRICE = 0.15; // Only buy at ≤15¢ — massive edge required
+  const MIN_EDGE_PCT = 500;     // At 15¢, edge = (1-0.15)/0.15*100 = 567% — always passes
+
+  for (const m of markets) {
+    if (!m.end_date || !m.ticker) continue;
+    checked++;
+
+    const sport = identifySportsGameWinner(m.ticker, m.question);
+    if (!sport) continue;
+    sportMatches++;
+
+    // Skip toxic markets
+    if (isToxicMarket(m.ticker, m.question)) continue;
+
+    const msLeft = new Date(m.end_date).getTime() - now;
+    const hoursLeft = msLeft / (1000 * 60 * 60);
+    if (hoursLeft < 0.5 || hoursLeft > maxHours) continue; // 30min to 48h window
+
+    // Check both sides — buy whichever is cheap
+    const sides: Array<{ side: "yes" | "no"; price: number }> = [];
+    if (m.yes_price > 0.02 && m.yes_price <= MAX_ENTRY_PRICE) {
+      sides.push({ side: "yes", price: m.yes_price });
+    }
+    if (m.no_price > 0.02 && m.no_price <= MAX_ENTRY_PRICE) {
+      sides.push({ side: "no", price: m.no_price });
+    }
+
+    for (const { side, price } of sides) {
+      const edge = ((1 - price) / price) * 100;
+      bets.push({ market: m, side, price, edge: Number(edge.toFixed(2)), hoursLeft: Number(hoursLeft.toFixed(1)), sport });
+    }
+  }
+
+  // Deduplicate by ticker+side
+  const seen = new Map<string, SportsGameWinnerBet>();
+  for (const b of bets) {
+    const key = `${b.market.ticker}-${b.side}`;
+    if (!seen.has(key) || seen.get(key)!.edge < b.edge) seen.set(key, b);
+  }
+
+  console.log(`Sports game winners: ${checked} checked, ${sportMatches} sport matches, ${bets.length} cheap bets found`);
+
+  // Sort by soonest resolution (prioritize imminent games)
+  return Array.from(seen.values()).sort((a, b) => a.hoursLeft - b.hoursLeft);
+}
+
 // ──────────── KALSHI VALUE BETTING ────────────
 
 interface KalshiValueBet {
