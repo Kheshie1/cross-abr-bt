@@ -1094,8 +1094,10 @@ interface SportsGameWinnerBet {
 }
 
 const SPORTS_TICKER_PATTERNS: Array<{ pattern: RegExp; sport: string }> = [
-  { pattern: /^KXNBA/i, sport: "NBA" },
-  { pattern: /^KXNFL/i, sport: "NFL" },
+  { pattern: /^KXNBAGAME/i, sport: "NBA" },
+  { pattern: /^KXNFLGAME/i, sport: "NFL" },
+  { pattern: /^KXMLBGAME/i, sport: "MLB" },
+  { pattern: /^KXNHLGAME/i, sport: "NHL" },
 ];
 
 const SPORTS_QUESTION_PATTERNS: Array<{ pattern: RegExp; sport: string }> = [
