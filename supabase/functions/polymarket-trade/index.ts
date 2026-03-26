@@ -2169,8 +2169,8 @@ Deno.serve(async (req) => {
           });
         }
 
-        // Fall back to ultra-safe value bets (≤5¢ threshold, 48h, $2 max)
-        return await executeValueBets(supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR, slotsAvailable, tradedMarketIds, tradedQuestions);
+        // Sports game winner fallback (value betting disabled)
+        // No additional fallback needed — sports strategy already tried above
       }
 
       // Step 5: Execute real orders on Polymarket + record in DB
