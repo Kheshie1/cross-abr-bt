@@ -1131,8 +1131,8 @@ function findSportsGameWinnerBets(markets: MarketData[], maxHours = 48): SportsG
   const bets: SportsGameWinnerBet[] = [];
   let checked = 0, sportMatches = 0;
 
-  const MAX_ENTRY_PRICE = 0.15; // Only buy at ≤15¢ — massive edge required
-  const MIN_EDGE_PCT = 500;     // At 15¢, edge = (1-0.15)/0.15*100 = 567% — always passes
+  const MAX_ENTRY_PRICE = 0.40; // Buy at ≤40¢ — need underdog or moderate favorite
+  const MIN_EDGE_PCT = 50;      // At 40¢, edge = (1-0.40)/0.40*100 = 150% — passes easily
 
   for (const m of markets) {
     if (!m.end_date || !m.ticker) continue;
