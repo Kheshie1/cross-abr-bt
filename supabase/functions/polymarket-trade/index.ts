@@ -1995,10 +1995,85 @@ Deno.serve(async (req) => {
         const kalshiToExecute = kalshiNew.slice(0, Math.min(slotsAvailable, 3));
 
         if (kalshiToExecute.length === 0) {
-          // VALUE BETTING DISABLED — it was the source of ALL losses.
-          // Only guaranteed-profit arbs are allowed.
-          console.log(`Auto-trade: no arbs found. Value betting DISABLED to protect bankroll.`);
-          return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit arbs found. Value betting disabled to protect bankroll." }), {
+          // Try conservative sports game winner strategy
+          console.log(`Auto-trade: no arbs found. Trying sports game winner strategy...`);
+          const sportsBets = findSportsGameWinnerBets(kalshiMarkets);
+          console.log(`Sports game winners: ${sportsBets.length} candidates`);
+
+          const newSportsBets = sportsBets.filter(b => {
+            if (tradedMarketIds.has(b.market.id)) return false;
+            if (tradedQuestions.has(normalize(b.market.question))) return false;
+            return true;
+          });
+
+          const sportsToPlace = newSportsBets.slice(0, Math.min(slotsAvailable, 2)); // Max 2 sports bets per cycle
+
+          if (sportsToPlace.length === 0) {
+            console.log(`Auto-trade: no sports game winners available either.`);
+            return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit arbs or sports game winners found." }), {
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+
+          const sportsInserts = [];
+          const sportsResults = [];
+
+          for (const bet of sportsToPlace) {
+            const ticker = bet.market.ticker;
+            if (!ticker) continue;
+
+            const currentBal = await fetchKalshiBalance();
+            const currentAvailable = Math.max(0, currentBal.balance - MIN_BALANCE_FLOOR);
+            const SPORTS_MAX = 2.00;
+            const tradeSize = Math.min(currentAvailable, SPORTS_MAX);
+            if (tradeSize < 0.10) {
+              console.log(`Sports bet: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
+              break;
+            }
+
+            try {
+              const yesPrice = bet.side === "yes" ? bet.price : (1 - bet.price);
+              const orderResult = await placeKalshiOrder(ticker, bet.side, yesPrice, tradeSize);
+              const orderId = orderResult?.order_id || orderResult?.id || null;
+              console.log(`✅ Sports ${bet.sport}: ${ticker} ${bet.side.toUpperCase()} @ ${(bet.price * 100).toFixed(0)}¢ | ${bet.hoursLeft}h left`);
+
+              sportsResults.push({ question: bet.market.question, side: bet.side, price: bet.price, edge: bet.edge, hoursLeft: bet.hoursLeft, sport: bet.sport, ticker });
+
+              sportsInserts.push({
+                market_id: bet.market.id,
+                market_question: bet.market.question,
+                token_id: ticker,
+                side: `BUY_${bet.side.toUpperCase()}@KALSHI`,
+                price: bet.price,
+                size: tradeSize,
+                status: "live",
+                order_id: orderId,
+                profit_loss: 0,
+                resolved_at: bet.market.end_date || null,
+              });
+            } catch (e) {
+              console.error(`❌ Sports bet failed (${ticker}): ${e}`);
+              continue;
+            }
+          }
+
+          if (sportsInserts.length > 0) {
+            const { data: trades, error: tradeErr } = await supabase
+              .from("polymarket_trades").insert(sportsInserts).select();
+            if (tradeErr) throw tradeErr;
+
+            return new Response(JSON.stringify({
+              executed: true,
+              strategy: "sports_game_winner",
+              count: sportsResults.length,
+              trades,
+              results: sportsResults,
+            }), {
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+
+          return new Response(JSON.stringify({ skipped: true, reason: "Sports game winner orders all failed" }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
