@@ -2342,9 +2342,50 @@ Deno.serve(async (req) => {
           });
         }
 
-        // VALUE BETTING DISABLED — it was the source of ALL losses.
-        console.log(`Auto-trade: no arbs found (fallback path). Value betting DISABLED.`);
-        return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit arbs found (fallback). Value betting disabled." }), {
+        // Try sports game winner strategy as final fallback
+        console.log(`Auto-trade: no arbs found (fallback path). Trying sports game winners...`);
+        const sportsBets2 = findSportsGameWinnerBets(kalshiMarkets);
+        const newSports2 = sportsBets2.filter(b => {
+          if (tradedMarketIds.has(b.market.id)) return false;
+          if (tradedQuestions.has(normalize(b.market.question))) return false;
+          return true;
+        });
+        const sports2ToPlace = newSports2.slice(0, Math.min(slotsAvailable, 2));
+
+        if (sports2ToPlace.length > 0) {
+          const sInserts = [];
+          const sResults = [];
+          for (const bet of sports2ToPlace) {
+            const ticker = bet.market.ticker;
+            if (!ticker) continue;
+            const currentBal = await fetchKalshiBalance();
+            const currentAvailable = Math.max(0, currentBal.balance - MIN_BALANCE_FLOOR);
+            const tradeSize = Math.min(currentAvailable, 2.00);
+            if (tradeSize < 0.10) break;
+            try {
+              const yesPrice = bet.side === "yes" ? bet.price : (1 - bet.price);
+              const orderResult = await placeKalshiOrder(ticker, bet.side, yesPrice, tradeSize);
+              const orderId = orderResult?.order_id || orderResult?.id || null;
+              console.log(`✅ Sports ${bet.sport}: ${ticker} ${bet.side.toUpperCase()} @ ${(bet.price * 100).toFixed(0)}¢`);
+              sResults.push({ question: bet.market.question, side: bet.side, price: bet.price, sport: bet.sport, ticker });
+              sInserts.push({
+                market_id: bet.market.id, market_question: bet.market.question,
+                token_id: ticker, side: `BUY_${bet.side.toUpperCase()}@KALSHI`,
+                price: bet.price, size: tradeSize, status: "live", order_id: orderId,
+                profit_loss: 0, resolved_at: bet.market.end_date || null,
+              });
+            } catch (e) { console.error(`❌ Sports bet failed: ${e}`); continue; }
+          }
+          if (sInserts.length > 0) {
+            const { data: trades, error: tradeErr } = await supabase.from("polymarket_trades").insert(sInserts).select();
+            if (tradeErr) throw tradeErr;
+            return new Response(JSON.stringify({ executed: true, strategy: "sports_game_winner_fallback", count: sResults.length, trades, results: sResults }), {
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+        }
+
+        return new Response(JSON.stringify({ skipped: true, reason: "No arbs or sports game winners found." }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
