@@ -1145,6 +1145,10 @@ function findSportsGameWinnerBets(markets: MarketData[], maxHours = 48): SportsG
     const sport = identifySportsGameWinner(m.ticker, m.question);
     if (!sport) continue;
     sportMatches++;
+    // Debug first 5 sport matches
+    if (sportMatches <= 5) {
+      console.log(`  Sport match: ${sport} ${m.ticker} yes=${m.yes_price} no=${m.no_price} ends=${m.end_date}`);
+    }
 
     // Skip toxic markets
     if (isToxicMarket(m.ticker, m.question)) continue;
