@@ -11,7 +11,7 @@ interface StatsCardsProps {
   liveCount: number;
 }
 
-export function StatsCards({ totalTrades, totalProfit, totalInvested, intervalMinutes, unrealizedPnL, liveInvested, liveCount }: StatsCardsProps) {
+export function StatsCards({ totalTrades, totalProfit, totalInvested, intervalMinutes, unrealizedPnL = 0, liveInvested = 0, liveCount = 0 }: StatsCardsProps) {
   const arbCount = Math.floor(totalTrades / 2);
   const roi = totalInvested > 0 ? ((totalProfit / totalInvested) * 100).toFixed(2) : "0.00";
 
