@@ -1081,6 +1081,110 @@ function isToxicMarket(ticker: string, question: string): boolean {
   return false;
 }
 
+// ──────────── KALSHI SPORTS GAME WINNER STRATEGY ────────────
+// Conservative: only NBA/NFL game winners at cheap prices, max $2/trade
+
+interface SportsGameWinnerBet {
+  market: MarketData;
+  side: "yes" | "no";
+  price: number;
+  edge: number;
+  hoursLeft: number;
+  sport: string;
+}
+
+const SPORTS_TICKER_PATTERNS: Array<{ pattern: RegExp; sport: string }> = [
+  { pattern: /^KXNBAGAME/i, sport: "NBA" },
+  { pattern: /^KXNFLGAME/i, sport: "NFL" },
+  { pattern: /^KXMLBGAME/i, sport: "MLB" },
+  { pattern: /^KXNHLGAME/i, sport: "NHL" },
+];
+
+const SPORTS_QUESTION_PATTERNS: Array<{ pattern: RegExp; sport: string }> = [
+  { pattern: /\bNBA\b.*\b(win|winner|beat|defeat|vs\.?|game)\b/i, sport: "NBA" },
+  { pattern: /\bNFL\b.*\b(win|winner|beat|defeat|vs\.?|game)\b/i, sport: "NFL" },
+  { pattern: /\bMLB\b.*\b(win|winner|beat|defeat|vs\.?|game)\b/i, sport: "MLB" },
+  { pattern: /\bNHL\b.*\b(win|winner|beat|defeat|vs\.?|game)\b/i, sport: "NHL" },
+  { pattern: /\bWinner\?\s*$/i, sport: "GAME" }, // "Team A vs Team B Winner?" pattern
+  { pattern: /\bvs\b.*\bWinner/i, sport: "GAME" },
+];
+
+function identifySportsGameWinner(ticker: string, question: string): string | null {
+  // Check ticker patterns first
+  for (const { pattern, sport } of SPORTS_TICKER_PATTERNS) {
+    if (pattern.test(ticker)) {
+      // Make sure it's a game winner market, not mentions/props
+      if (/mention/i.test(ticker) || /mention/i.test(question)) return null;
+      if (/points|rebounds|assists|passing|rushing|receiving|tackles|sacks/i.test(question)) return null;
+      return sport;
+    }
+  }
+  // Check question patterns
+  for (const { pattern, sport } of SPORTS_QUESTION_PATTERNS) {
+    if (pattern.test(question)) {
+      if (/mention/i.test(question)) return null;
+      if (/points|rebounds|assists|passing|rushing|receiving|tackles|sacks/i.test(question)) return null;
+      return sport;
+    }
+  }
+  return null;
+}
+
+function findSportsGameWinnerBets(markets: MarketData[], maxHours = 168): SportsGameWinnerBet[] { // 7-day window
+  const now = Date.now();
+  const bets: SportsGameWinnerBet[] = [];
+  let checked = 0, sportMatches = 0;
+
+  const MAX_ENTRY_PRICE = 0.50; // Buy underdog at ≤50¢ (2:1 odds or better)
+  const MIN_EDGE_PCT = 50;      // At 50¢, edge = 100% — reasonable for game winners
+
+  for (const m of markets) {
+    if (!m.end_date || !m.ticker) continue;
+    checked++;
+
+    const sport = identifySportsGameWinner(m.ticker, m.question);
+    if (!sport) continue;
+    sportMatches++;
+    // Debug: log price range of first few matches
+    if (sportMatches <= 3) {
+      console.log(`  Sport: ${sport} ${m.ticker} yes=${m.yes_price} no=${m.no_price} q="${m.question?.slice(0,50)}" ends=${m.end_date}`);
+    }
+
+    // Skip toxic markets
+    if (isToxicMarket(m.ticker, m.question)) continue;
+
+    const msLeft = new Date(m.end_date).getTime() - now;
+    const hoursLeft = msLeft / (1000 * 60 * 60);
+    if (hoursLeft < 0.5 || hoursLeft > maxHours) continue; // 30min to 48h window
+
+    // Check both sides — buy whichever is cheap
+    const sides: Array<{ side: "yes" | "no"; price: number }> = [];
+    if (m.yes_price > 0.02 && m.yes_price <= MAX_ENTRY_PRICE) {
+      sides.push({ side: "yes", price: m.yes_price });
+    }
+    if (m.no_price > 0.02 && m.no_price <= MAX_ENTRY_PRICE) {
+      sides.push({ side: "no", price: m.no_price });
+    }
+
+    for (const { side, price } of sides) {
+      const edge = ((1 - price) / price) * 100;
+      bets.push({ market: m, side, price, edge: Number(edge.toFixed(2)), hoursLeft: Number(hoursLeft.toFixed(1)), sport });
+    }
+  }
+
+  // Deduplicate by ticker+side
+  const seen = new Map<string, SportsGameWinnerBet>();
+  for (const b of bets) {
+    const key = `${b.market.ticker}-${b.side}`;
+    if (!seen.has(key) || seen.get(key)!.edge < b.edge) seen.set(key, b);
+  }
+
+  console.log(`Sports game winners: ${checked} checked, ${sportMatches} sport matches, ${bets.length} cheap bets found`);
+
+  // Sort by soonest resolution (prioritize imminent games)
+  return Array.from(seen.values()).sort((a, b) => a.hoursLeft - b.hoursLeft);
+}
+
 // ──────────── KALSHI VALUE BETTING ────────────
 
 interface KalshiValueBet {
@@ -1899,10 +2003,85 @@ Deno.serve(async (req) => {
         const kalshiToExecute = kalshiNew.slice(0, Math.min(slotsAvailable, 3));
 
         if (kalshiToExecute.length === 0) {
-          // VALUE BETTING DISABLED — it was the source of ALL losses.
-          // Only guaranteed-profit arbs are allowed.
-          console.log(`Auto-trade: no arbs found. Value betting DISABLED to protect bankroll.`);
-          return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit arbs found. Value betting disabled to protect bankroll." }), {
+          // Try conservative sports game winner strategy
+          console.log(`Auto-trade: no arbs found. Trying sports game winner strategy...`);
+          const sportsBets = findSportsGameWinnerBets(kalshiMarkets);
+          console.log(`Sports game winners: ${sportsBets.length} candidates`);
+
+          const newSportsBets = sportsBets.filter(b => {
+            if (tradedMarketIds.has(b.market.id)) return false;
+            if (tradedQuestions.has(normalize(b.market.question))) return false;
+            return true;
+          });
+
+          const sportsToPlace = newSportsBets.slice(0, Math.min(slotsAvailable, 2)); // Max 2 sports bets per cycle
+
+          if (sportsToPlace.length === 0) {
+            console.log(`Auto-trade: no sports game winners available either.`);
+            return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit arbs or sports game winners found." }), {
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+
+          const sportsInserts = [];
+          const sportsResults = [];
+
+          for (const bet of sportsToPlace) {
+            const ticker = bet.market.ticker;
+            if (!ticker) continue;
+
+            const currentBal = await fetchKalshiBalance();
+            const currentAvailable = Math.max(0, currentBal.balance - MIN_BALANCE_FLOOR);
+            const SPORTS_MAX = 2.00;
+            const tradeSize = Math.min(currentAvailable, SPORTS_MAX);
+            if (tradeSize < 0.10) {
+              console.log(`Sports bet: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
+              break;
+            }
+
+            try {
+              const yesPrice = bet.side === "yes" ? bet.price : (1 - bet.price);
+              const orderResult = await placeKalshiOrder(ticker, bet.side, yesPrice, tradeSize);
+              const orderId = orderResult?.order_id || orderResult?.id || null;
+              console.log(`✅ Sports ${bet.sport}: ${ticker} ${bet.side.toUpperCase()} @ ${(bet.price * 100).toFixed(0)}¢ | ${bet.hoursLeft}h left`);
+
+              sportsResults.push({ question: bet.market.question, side: bet.side, price: bet.price, edge: bet.edge, hoursLeft: bet.hoursLeft, sport: bet.sport, ticker });
+
+              sportsInserts.push({
+                market_id: bet.market.id,
+                market_question: bet.market.question,
+                token_id: ticker,
+                side: `BUY_${bet.side.toUpperCase()}@KALSHI`,
+                price: bet.price,
+                size: tradeSize,
+                status: "live",
+                order_id: orderId,
+                profit_loss: 0,
+                resolved_at: bet.market.end_date || null,
+              });
+            } catch (e) {
+              console.error(`❌ Sports bet failed (${ticker}): ${e}`);
+              continue;
+            }
+          }
+
+          if (sportsInserts.length > 0) {
+            const { data: trades, error: tradeErr } = await supabase
+              .from("polymarket_trades").insert(sportsInserts).select();
+            if (tradeErr) throw tradeErr;
+
+            return new Response(JSON.stringify({
+              executed: true,
+              strategy: "sports_game_winner",
+              count: sportsResults.length,
+              trades,
+              results: sportsResults,
+            }), {
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+
+          return new Response(JSON.stringify({ skipped: true, reason: "Sports game winner orders all failed" }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
@@ -1998,8 +2177,8 @@ Deno.serve(async (req) => {
           });
         }
 
-        // Fall back to ultra-safe value bets (≤5¢ threshold, 48h, $2 max)
-        return await executeValueBets(supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR, slotsAvailable, tradedMarketIds, tradedQuestions);
+        // Sports game winner fallback (value betting disabled)
+        // No additional fallback needed — sports strategy already tried above
       }
 
       // Step 5: Execute real orders on Polymarket + record in DB
@@ -2171,9 +2350,50 @@ Deno.serve(async (req) => {
           });
         }
 
-        // VALUE BETTING DISABLED — it was the source of ALL losses.
-        console.log(`Auto-trade: no arbs found (fallback path). Value betting DISABLED.`);
-        return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit arbs found (fallback). Value betting disabled." }), {
+        // Try sports game winner strategy as final fallback
+        console.log(`Auto-trade: no arbs found (fallback path). Trying sports game winners...`);
+        const sportsBets2 = findSportsGameWinnerBets(kalshiMarkets);
+        const newSports2 = sportsBets2.filter(b => {
+          if (tradedMarketIds.has(b.market.id)) return false;
+          if (tradedQuestions.has(normalize(b.market.question))) return false;
+          return true;
+        });
+        const sports2ToPlace = newSports2.slice(0, Math.min(slotsAvailable, 2));
+
+        if (sports2ToPlace.length > 0) {
+          const sInserts = [];
+          const sResults = [];
+          for (const bet of sports2ToPlace) {
+            const ticker = bet.market.ticker;
+            if (!ticker) continue;
+            const currentBal = await fetchKalshiBalance();
+            const currentAvailable = Math.max(0, currentBal.balance - MIN_BALANCE_FLOOR);
+            const tradeSize = Math.min(currentAvailable, 2.00);
+            if (tradeSize < 0.10) break;
+            try {
+              const yesPrice = bet.side === "yes" ? bet.price : (1 - bet.price);
+              const orderResult = await placeKalshiOrder(ticker, bet.side, yesPrice, tradeSize);
+              const orderId = orderResult?.order_id || orderResult?.id || null;
+              console.log(`✅ Sports ${bet.sport}: ${ticker} ${bet.side.toUpperCase()} @ ${(bet.price * 100).toFixed(0)}¢`);
+              sResults.push({ question: bet.market.question, side: bet.side, price: bet.price, sport: bet.sport, ticker });
+              sInserts.push({
+                market_id: bet.market.id, market_question: bet.market.question,
+                token_id: ticker, side: `BUY_${bet.side.toUpperCase()}@KALSHI`,
+                price: bet.price, size: tradeSize, status: "live", order_id: orderId,
+                profit_loss: 0, resolved_at: bet.market.end_date || null,
+              });
+            } catch (e) { console.error(`❌ Sports bet failed: ${e}`); continue; }
+          }
+          if (sInserts.length > 0) {
+            const { data: trades, error: tradeErr } = await supabase.from("polymarket_trades").insert(sInserts).select();
+            if (tradeErr) throw tradeErr;
+            return new Response(JSON.stringify({ executed: true, strategy: "sports_game_winner_fallback", count: sResults.length, trades, results: sResults }), {
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+        }
+
+        return new Response(JSON.stringify({ skipped: true, reason: "No arbs or sports game winners found." }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
