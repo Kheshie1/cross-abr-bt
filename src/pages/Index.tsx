@@ -23,7 +23,7 @@ const Index = () => {
 
   const settings = data?.settings;
   const trades = data?.trades || [];
-  const stats = data?.stats || { totalTrades: 0, totalProfit: 0, totalInvested: 0 };
+  const stats = data?.stats || { totalTrades: 0, totalProfit: 0, totalInvested: 0, unrealizedPnL: 0, liveInvested: 0, liveCount: 0 };
 
   return (
     <div className="min-h-screen bg-background">
@@ -37,6 +37,9 @@ const Index = () => {
           totalProfit={stats.totalProfit}
           totalInvested={stats.totalInvested}
           intervalMinutes={settings?.interval_minutes || 4.47}
+          unrealizedPnL={stats.unrealizedPnL}
+          liveInvested={stats.liveInvested}
+          liveCount={stats.liveCount}
         />
         <PnLChart trades={trades} />
         <LiveOpportunities />

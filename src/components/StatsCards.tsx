@@ -1,4 +1,4 @@
-import { TrendingUp, DollarSign, BarChart3, Percent } from "lucide-react";
+import { TrendingUp, DollarSign, BarChart3, Percent, Clock } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 
 interface StatsCardsProps {
@@ -6,9 +6,12 @@ interface StatsCardsProps {
   totalProfit: number;
   totalInvested: number;
   intervalMinutes: number;
+  unrealizedPnL: number;
+  liveInvested: number;
+  liveCount: number;
 }
 
-export function StatsCards({ totalTrades, totalProfit, totalInvested, intervalMinutes }: StatsCardsProps) {
+export function StatsCards({ totalTrades, totalProfit, totalInvested, intervalMinutes, unrealizedPnL, liveInvested, liveCount }: StatsCardsProps) {
   const arbCount = Math.floor(totalTrades / 2);
   const roi = totalInvested > 0 ? ((totalProfit / totalInvested) * 100).toFixed(2) : "0.00";
 
@@ -37,10 +40,17 @@ export function StatsCards({ totalTrades, totalProfit, totalInvested, intervalMi
       icon: Percent,
       color: Number(roi) >= 0 ? "text-profit" : "text-loss",
     },
+    {
+      label: `Unrealized (${liveCount} live)`,
+      value: `$${liveInvested.toFixed(2)}`,
+      sub: unrealizedPnL !== 0 ? `${unrealizedPnL >= 0 ? "+" : ""}$${unrealizedPnL.toFixed(2)} est.` : "pending",
+      icon: Clock,
+      color: "text-muted-foreground",
+    },
   ];
 
   return (
-    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
       {stats.map((s) => (
         <Card key={s.label} className="bg-card border-border">
           <CardContent className="flex items-center gap-3 p-4">
@@ -48,6 +58,9 @@ export function StatsCards({ totalTrades, totalProfit, totalInvested, intervalMi
             <div>
               <p className="text-xs text-muted-foreground">{s.label}</p>
               <p className={`text-lg font-bold ${s.color}`}>{s.value}</p>
+              {"sub" in s && s.sub && (
+                <p className="text-xs text-muted-foreground">{s.sub}</p>
+              )}
             </div>
           </CardContent>
         </Card>
