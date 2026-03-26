@@ -1130,7 +1130,7 @@ function identifySportsGameWinner(ticker: string, question: string): string | nu
   return null;
 }
 
-function findSportsGameWinnerBets(markets: MarketData[], maxHours = 48): SportsGameWinnerBet[] {
+function findSportsGameWinnerBets(markets: MarketData[], maxHours = 168): SportsGameWinnerBet[] { // 7-day window
   const now = Date.now();
   const bets: SportsGameWinnerBet[] = [];
   let checked = 0, sportMatches = 0;
