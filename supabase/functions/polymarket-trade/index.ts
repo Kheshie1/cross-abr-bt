@@ -1792,8 +1792,11 @@ Deno.serve(async (req) => {
         .select("*");
 
       const totalTrades = allTrades?.length || 0;
-      const totalProfit = allTrades?.reduce((sum, t) => sum + (t.profit_loss || 0), 0) || 0;
-      const totalInvested = allTrades?.reduce((sum, t) => sum + (t.size || 0), 0) || 0;
+      // Only count settled/executed trades for P&L (not live/pending)
+      const resolvedTrades = allTrades?.filter(t => t.status === 'settled' || t.status === 'expired' || t.status === 'executed') || [];
+      const totalProfit = resolvedTrades.reduce((sum, t) => sum + (t.profit_loss || 0), 0);
+      // totalInvested = capital deployed on resolved trades only
+      const totalInvested = resolvedTrades.reduce((sum, t) => sum + (t.size || 0), 0);
       const arbCount = Math.floor(totalTrades / 2);
 
       return new Response(
