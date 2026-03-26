@@ -1798,9 +1798,13 @@ Deno.serve(async (req) => {
       // totalInvested = capital deployed on resolved trades only
       const totalInvested = resolvedTrades.reduce((sum, t) => sum + (t.size || 0), 0);
       const arbCount = Math.floor(totalTrades / 2);
+      // Unrealized P&L from live/pending trades
+      const liveTrades = allTrades?.filter(t => t.status === 'live' || t.status === 'pending') || [];
+      const unrealizedPnL = liveTrades.reduce((sum, t) => sum + (t.profit_loss || 0), 0);
+      const liveInvested = liveTrades.reduce((sum, t) => sum + (t.size || 0), 0);
 
       return new Response(
-        JSON.stringify({ settings, trades, stats: { totalTrades, totalProfit, totalInvested, arbCount } }),
+        JSON.stringify({ settings, trades, stats: { totalTrades, totalProfit, totalInvested, arbCount, unrealizedPnL, liveInvested, liveCount: liveTrades.length } }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
