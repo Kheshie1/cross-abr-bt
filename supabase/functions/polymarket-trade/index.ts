@@ -1101,10 +1101,12 @@ const SPORTS_TICKER_PATTERNS: Array<{ pattern: RegExp; sport: string }> = [
 ];
 
 const SPORTS_QUESTION_PATTERNS: Array<{ pattern: RegExp; sport: string }> = [
-  { pattern: /\bNBA\b.*\b(win|beat|defeat|vs\.?|game)\b/i, sport: "NBA" },
-  { pattern: /\bNFL\b.*\b(win|beat|defeat|vs\.?|game)\b/i, sport: "NFL" },
-  { pattern: /\b(Lakers|Celtics|Warriors|Bucks|76ers|Nuggets|Heat|Knicks|Suns|Mavericks|Cavaliers|Thunder|Timberwolves|Pacers|Clippers|Hawks|Bulls|Nets|Rockets|Grizzlies|Kings|Pelicans|Magic|Raptors|Spurs|Trail Blazers|Pistons|Hornets|Jazz|Wizards)\b.*\b(win|beat|game)\b/i, sport: "NBA" },
-  { pattern: /\b(Chiefs|49ers|Eagles|Bills|Cowboys|Ravens|Lions|Dolphins|Bengals|Texans|Jets|Packers|Steelers|Broncos|Chargers|Vikings|Seahawks|Commanders|Bears|Saints|Falcons|Rams|Jaguars|Browns|Cardinals|Titans|Raiders|Colts|Panthers|Giants|Buccaneers)\b.*\b(win|beat|game)\b/i, sport: "NFL" },
+  { pattern: /\bNBA\b.*\b(win|winner|beat|defeat|vs\.?|game)\b/i, sport: "NBA" },
+  { pattern: /\bNFL\b.*\b(win|winner|beat|defeat|vs\.?|game)\b/i, sport: "NFL" },
+  { pattern: /\bMLB\b.*\b(win|winner|beat|defeat|vs\.?|game)\b/i, sport: "MLB" },
+  { pattern: /\bNHL\b.*\b(win|winner|beat|defeat|vs\.?|game)\b/i, sport: "NHL" },
+  { pattern: /\bWinner\?\s*$/i, sport: "GAME" }, // "Team A vs Team B Winner?" pattern
+  { pattern: /\bvs\b.*\bWinner/i, sport: "GAME" },
 ];
 
 function identifySportsGameWinner(ticker: string, question: string): string | null {
