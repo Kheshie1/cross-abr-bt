@@ -1737,8 +1737,28 @@ Deno.serve(async (req) => {
 
     // ──── EXECUTE ────
     if (action === "execute") {
+      if (
+        typeof buy_yes_price !== "number" ||
+        typeof buy_no_price !== "number" ||
+        buy_yes_price <= 0 ||
+        buy_no_price <= 0
+      ) {
+        return new Response(JSON.stringify({ error: "Both arb leg prices are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
       const totalCost = (buy_yes_price || 0) + (buy_no_price || 0);
       const arbProfit = 1 - totalCost;
+
+      if (arbProfit <= 0) {
+        return new Response(JSON.stringify({ error: "Trade rejected: not a guaranteed-profit arb pair" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
       const tradeSize = size || 0.5;
 
       const { data: trades, error } = await supabase
@@ -2010,85 +2030,8 @@ Deno.serve(async (req) => {
         const kalshiToExecute = kalshiNew.slice(0, Math.min(slotsAvailable, 3));
 
         if (kalshiToExecute.length === 0) {
-          // Try conservative sports game winner strategy
-          console.log(`Auto-trade: no arbs found. Trying sports game winner strategy...`);
-          const sportsBets = findSportsGameWinnerBets(kalshiMarkets);
-          console.log(`Sports game winners: ${sportsBets.length} candidates`);
-
-          const newSportsBets = sportsBets.filter(b => {
-            if (tradedMarketIds.has(b.market.id)) return false;
-            if (tradedQuestions.has(normalize(b.market.question))) return false;
-            return true;
-          });
-
-          const sportsToPlace = newSportsBets.slice(0, Math.min(slotsAvailable, 2)); // Max 2 sports bets per cycle
-
-          if (sportsToPlace.length === 0) {
-            console.log(`Auto-trade: no sports game winners available either.`);
-            return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit arbs or sports game winners found." }), {
-              headers: { ...corsHeaders, "Content-Type": "application/json" },
-            });
-          }
-
-          const sportsInserts = [];
-          const sportsResults = [];
-
-          for (const bet of sportsToPlace) {
-            const ticker = bet.market.ticker;
-            if (!ticker) continue;
-
-            const currentBal = await fetchKalshiBalance();
-            const currentAvailable = Math.max(0, currentBal.balance - MIN_BALANCE_FLOOR);
-            const SPORTS_MAX = 2.00;
-            const tradeSize = Math.min(currentAvailable, SPORTS_MAX);
-            if (tradeSize < 0.10) {
-              console.log(`Sports bet: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
-              break;
-            }
-
-            try {
-              const yesPrice = bet.side === "yes" ? bet.price : (1 - bet.price);
-              const orderResult = await placeKalshiOrder(ticker, bet.side, yesPrice, tradeSize);
-              const orderId = orderResult?.order_id || orderResult?.id || null;
-              console.log(`✅ Sports ${bet.sport}: ${ticker} ${bet.side.toUpperCase()} @ ${(bet.price * 100).toFixed(0)}¢ | ${bet.hoursLeft}h left`);
-
-              sportsResults.push({ question: bet.market.question, side: bet.side, price: bet.price, edge: bet.edge, hoursLeft: bet.hoursLeft, sport: bet.sport, ticker });
-
-              sportsInserts.push({
-                market_id: bet.market.id,
-                market_question: bet.market.question,
-                token_id: ticker,
-                side: `BUY_${bet.side.toUpperCase()}@KALSHI`,
-                price: bet.price,
-                size: tradeSize,
-                status: "live",
-                order_id: orderId,
-                profit_loss: 0,
-                resolved_at: bet.market.end_date || null,
-              });
-            } catch (e) {
-              console.error(`❌ Sports bet failed (${ticker}): ${e}`);
-              continue;
-            }
-          }
-
-          if (sportsInserts.length > 0) {
-            const { data: trades, error: tradeErr } = await supabase
-              .from("polymarket_trades").insert(sportsInserts).select();
-            if (tradeErr) throw tradeErr;
-
-            return new Response(JSON.stringify({
-              executed: true,
-              strategy: "sports_game_winner",
-              count: sportsResults.length,
-              trades,
-              results: sportsResults,
-            }), {
-              headers: { ...corsHeaders, "Content-Type": "application/json" },
-            });
-          }
-
-          return new Response(JSON.stringify({ skipped: true, reason: "Sports game winner orders all failed" }), {
+          console.log(`Auto-trade: no guaranteed-profit arb pairs available.`);
+          return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit arb pairs found." }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
@@ -2128,7 +2071,8 @@ Deno.serve(async (req) => {
             console.log(`✅ Kalshi NO: ${ticker} @ ${(arb.no_price * 100).toFixed(0)}¢`);
           } catch (e) {
             console.error(`❌ Kalshi NO order failed: ${e}`);
-            // YES already placed — record it anyway
+            // Enforce pair-only mode: skip DB insert for partial legs.
+            continue;
           }
 
           const arbProfit = arb.guaranteed_profit * tradeSize;
@@ -2154,7 +2098,7 @@ Deno.serve(async (req) => {
               side: "BUY_NO@KALSHI",
               price: arb.no_price,
               size: tradeSize,
-              status: noOrderId ? "live" : "failed",
+              status: "live",
               order_id: noOrderId,
               profit_loss: 0,
               resolved_at: arb.market.end_date || null,
@@ -2357,50 +2301,7 @@ Deno.serve(async (req) => {
           });
         }
 
-        // Try sports game winner strategy as final fallback
-        console.log(`Auto-trade: no arbs found (fallback path). Trying sports game winners...`);
-        const sportsBets2 = findSportsGameWinnerBets(kalshiMarkets);
-        const newSports2 = sportsBets2.filter(b => {
-          if (tradedMarketIds.has(b.market.id)) return false;
-          if (tradedQuestions.has(normalize(b.market.question))) return false;
-          return true;
-        });
-        const sports2ToPlace = newSports2.slice(0, Math.min(slotsAvailable, 2));
-
-        if (sports2ToPlace.length > 0) {
-          const sInserts = [];
-          const sResults = [];
-          for (const bet of sports2ToPlace) {
-            const ticker = bet.market.ticker;
-            if (!ticker) continue;
-            const currentBal = await fetchKalshiBalance();
-            const currentAvailable = Math.max(0, currentBal.balance - MIN_BALANCE_FLOOR);
-            const tradeSize = Math.min(currentAvailable, 2.00);
-            if (tradeSize < 0.10) break;
-            try {
-              const yesPrice = bet.side === "yes" ? bet.price : (1 - bet.price);
-              const orderResult = await placeKalshiOrder(ticker, bet.side, yesPrice, tradeSize);
-              const orderId = orderResult?.order_id || orderResult?.id || null;
-              console.log(`✅ Sports ${bet.sport}: ${ticker} ${bet.side.toUpperCase()} @ ${(bet.price * 100).toFixed(0)}¢`);
-              sResults.push({ question: bet.market.question, side: bet.side, price: bet.price, sport: bet.sport, ticker });
-              sInserts.push({
-                market_id: bet.market.id, market_question: bet.market.question,
-                token_id: ticker, side: `BUY_${bet.side.toUpperCase()}@KALSHI`,
-                price: bet.price, size: tradeSize, status: "live", order_id: orderId,
-                profit_loss: 0, resolved_at: bet.market.end_date || null,
-              });
-            } catch (e) { console.error(`❌ Sports bet failed: ${e}`); continue; }
-          }
-          if (sInserts.length > 0) {
-            const { data: trades, error: tradeErr } = await supabase.from("polymarket_trades").insert(sInserts).select();
-            if (tradeErr) throw tradeErr;
-            return new Response(JSON.stringify({ executed: true, strategy: "sports_game_winner_fallback", count: sResults.length, trades, results: sResults }), {
-              headers: { ...corsHeaders, "Content-Type": "application/json" },
-            });
-          }
-        }
-
-        return new Response(JSON.stringify({ skipped: true, reason: "No arbs or sports game winners found." }), {
+        return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit arb pairs found." }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
