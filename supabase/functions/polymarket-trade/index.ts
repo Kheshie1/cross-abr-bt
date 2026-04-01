@@ -1672,9 +1672,9 @@ Deno.serve(async (req) => {
       console.log(`Scan: ${polymarkets.length} Poly × ${kalshiMarkets.length} Kalshi × ${myriadMarkets.length} Myriad`);
 
       // Cross-platform arbs across all pairs
-      const arbs1 = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.15);
-      const arbs2 = findCrossPlatformArbs(polymarkets, myriadMarkets, 0.15);
-      const arbs3 = findCrossPlatformArbs(kalshiMarkets, myriadMarkets, 0.15);
+      const arbs1 = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.45);
+      const arbs2 = findCrossPlatformArbs(polymarkets, myriadMarkets, 0.45);
+      const arbs3 = findCrossPlatformArbs(kalshiMarkets, myriadMarkets, 0.45);
 
       // Deduplicate by source market id
       const seen = new Set<string>();
@@ -1728,12 +1728,12 @@ Deno.serve(async (req) => {
       const soonMyriad = myriadMarkets.filter(filterSoon);
 
       // All cross-platform pairs
-      const arbs1 = findCrossPlatformArbs(soonPoly, kalshiMarkets, 0.15);
-      const arbs2 = findCrossPlatformArbs(polymarkets, soonKalshi, 0.15);
-      const arbs3 = findCrossPlatformArbs(soonPoly, myriadMarkets, 0.15);
-      const arbs4 = findCrossPlatformArbs(polymarkets, soonMyriad, 0.15);
-      const arbs5 = findCrossPlatformArbs(soonKalshi, myriadMarkets, 0.15);
-      const arbs6 = findCrossPlatformArbs(kalshiMarkets, soonMyriad, 0.15);
+      const arbs1 = findCrossPlatformArbs(soonPoly, kalshiMarkets, 0.45);
+      const arbs2 = findCrossPlatformArbs(polymarkets, soonKalshi, 0.45);
+      const arbs3 = findCrossPlatformArbs(soonPoly, myriadMarkets, 0.45);
+      const arbs4 = findCrossPlatformArbs(polymarkets, soonMyriad, 0.45);
+      const arbs5 = findCrossPlatformArbs(soonKalshi, myriadMarkets, 0.45);
+      const arbs6 = findCrossPlatformArbs(kalshiMarkets, soonMyriad, 0.45);
 
       // Deduplicate by source market id
       const seen = new Set<string>();
