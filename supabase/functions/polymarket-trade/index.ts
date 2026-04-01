@@ -567,6 +567,12 @@ function normalize(s: string): string {
     .trim();
 }
 
+// Extract key numbers (prices, thresholds, percentages) from a question
+function extractNumbers(s: string): string[] {
+  const matches = s.match(/\d[\d,]*\.?\d*/g) || [];
+  return matches.map(m => m.replace(/,/g, ""));
+}
+
 // Generate bigrams for fuzzy matching (more robust than single tokens)
 function bigrams(s: string): Set<string> {
   const norm = normalize(s);
@@ -611,20 +617,32 @@ function extractEntities(s: string): string[] {
     .filter((w) => w.length > 2 && !stop.has(w));
 }
 
-// Match quality — relaxed for more coverage
+// STRICT match quality — requires high similarity AND matching numbers
 function matchMarkets(polyQ: string, kalshiQ: string, polyEnts: string[], kalshiEnts: Set<string>): number {
   const entityMatches = polyEnts.filter((e) => kalshiEnts.has(e));
   const matchCount = entityMatches.length;
 
   const dice = diceCoefficient(polyQ, kalshiQ);
 
-  // Allow single entity match IF dice similarity is strong
-  if (matchCount === 0) return 0;
-  if (matchCount === 1 && dice < 0.35) return 0;
+  // STRICT: Need at least 2 matching entities AND decent dice
+  if (matchCount < 2) return 0;
+  if (dice < 0.5) return 0;
+
+  // CRITICAL: Numbers in the questions must match exactly
+  // This prevents "S&P above 6750" matching with "S&P above 6724"
+  const polyNums = extractNumbers(polyQ);
+  const kalshiNums = extractNumbers(kalshiQ);
+  
+  // If both questions contain numbers, they must share at least one
+  if (polyNums.length > 0 && kalshiNums.length > 0) {
+    const polyNumSet = new Set(polyNums);
+    const hasMatchingNumber = kalshiNums.some(n => polyNumSet.has(n));
+    if (!hasMatchingNumber) return 0; // Different strike prices = NOT the same market
+  }
 
   const entityScore = matchCount / Math.max(polyEnts.length, kalshiEnts.size);
 
-  // 55% entity, 45% bigram — more weight on fuzzy for broader matching
+  // 55% entity, 45% bigram
   const combined = entityScore * 0.55 + dice * 0.45;
 
   const bonus = matchCount >= 3 ? 0.1 : matchCount >= 2 ? 0.05 : 0;
@@ -958,7 +976,7 @@ function findCrossPlatformArbs(
         total_cost: Number(bestCost.toFixed(4)),
         spread_pct: Number(spreadPct.toFixed(2)),
         guaranteed_profit: Number((1 - bestCost).toFixed(4)),
-        is_arb: bestCost < 1,
+        is_arb: bestCost < 0.97, // STRICT: 3%+ guaranteed profit to cover fees/slippage
       });
     }
   }
@@ -984,7 +1002,9 @@ function findKalshiInternalArbs(markets: MarketData[]): KalshiInternalArb[] {
     if (isToxicMarket(m.ticker || "", m.question)) continue;
 
     const totalCost = m.yes_price + m.no_price;
-    if (totalCost < 0.99) { // Must cost less than $0.99 for guaranteed profit after fees
+    // STRICT: Must cost less than $0.97 for guaranteed profit after fees + slippage
+    // Previous $0.99 threshold was too loose — Kalshi bid/ask spreads created phantom arbs
+    if (totalCost < 0.97) {
       const profit = 1 - totalCost;
       arbs.push({
         market: m,
@@ -1652,9 +1672,9 @@ Deno.serve(async (req) => {
       console.log(`Scan: ${polymarkets.length} Poly × ${kalshiMarkets.length} Kalshi × ${myriadMarkets.length} Myriad`);
 
       // Cross-platform arbs across all pairs
-      const arbs1 = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.15);
-      const arbs2 = findCrossPlatformArbs(polymarkets, myriadMarkets, 0.15);
-      const arbs3 = findCrossPlatformArbs(kalshiMarkets, myriadMarkets, 0.15);
+      const arbs1 = findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.45);
+      const arbs2 = findCrossPlatformArbs(polymarkets, myriadMarkets, 0.45);
+      const arbs3 = findCrossPlatformArbs(kalshiMarkets, myriadMarkets, 0.45);
 
       // Deduplicate by source market id
       const seen = new Set<string>();
@@ -1708,12 +1728,12 @@ Deno.serve(async (req) => {
       const soonMyriad = myriadMarkets.filter(filterSoon);
 
       // All cross-platform pairs
-      const arbs1 = findCrossPlatformArbs(soonPoly, kalshiMarkets, 0.15);
-      const arbs2 = findCrossPlatformArbs(polymarkets, soonKalshi, 0.15);
-      const arbs3 = findCrossPlatformArbs(soonPoly, myriadMarkets, 0.15);
-      const arbs4 = findCrossPlatformArbs(polymarkets, soonMyriad, 0.15);
-      const arbs5 = findCrossPlatformArbs(soonKalshi, myriadMarkets, 0.15);
-      const arbs6 = findCrossPlatformArbs(kalshiMarkets, soonMyriad, 0.15);
+      const arbs1 = findCrossPlatformArbs(soonPoly, kalshiMarkets, 0.45);
+      const arbs2 = findCrossPlatformArbs(polymarkets, soonKalshi, 0.45);
+      const arbs3 = findCrossPlatformArbs(soonPoly, myriadMarkets, 0.45);
+      const arbs4 = findCrossPlatformArbs(polymarkets, soonMyriad, 0.45);
+      const arbs5 = findCrossPlatformArbs(soonKalshi, myriadMarkets, 0.45);
+      const arbs6 = findCrossPlatformArbs(kalshiMarkets, soonMyriad, 0.45);
 
       // Deduplicate by source market id
       const seen = new Set<string>();
@@ -1990,9 +2010,9 @@ Deno.serve(async (req) => {
       };
 
       const allCrossArbs = [
-        ...findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.2),
-        ...findCrossPlatformArbs(polymarkets, myriadMarkets, 0.2),
-        ...findCrossPlatformArbs(kalshiMarkets, myriadMarkets, 0.2),
+        ...findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.45),
+        ...findCrossPlatformArbs(polymarkets, myriadMarkets, 0.45),
+        ...findCrossPlatformArbs(kalshiMarkets, myriadMarkets, 0.45),
       ].filter(timeFilter);
 
       // Deduplicate
