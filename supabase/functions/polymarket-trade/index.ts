@@ -1065,7 +1065,7 @@ function screenKalshiArbCandidates(markets: MarketData[]): MarketData[] {
 }
 
 // Phase 2: Verify candidates against real orderbook data
-async function findKalshiInternalArbs(markets: MarketData[], maxVerify = 40): Promise<KalshiInternalArb[]> {
+async function findKalshiInternalArbs(markets: MarketData[], maxVerify = 80): Promise<KalshiInternalArb[]> {
   const candidates = screenKalshiArbCandidates(markets);
   console.log(`Kalshi arb screen: ${candidates.length} candidates from ${markets.length} markets`);
 
