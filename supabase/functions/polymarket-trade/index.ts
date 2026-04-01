@@ -699,7 +699,7 @@ async function fetchPolymarkets(limit = 500): Promise<MarketData[]> {
 
 // ──────────── KALSHI FETCH (multi-page, MVE excluded) ────────────
 
-async function fetchKalshiMarkets(maxPages = 10): Promise<MarketData[]> {
+async function fetchKalshiMarkets(maxPages = 25): Promise<MarketData[]> {
   const allMarkets: MarketData[] = [];
   let cursor: string | undefined;
   let skipMve = 0, skipType = 0, skipQ = 0, skipPrice = 0;
