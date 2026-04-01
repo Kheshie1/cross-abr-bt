@@ -699,7 +699,7 @@ async function fetchPolymarkets(limit = 500): Promise<MarketData[]> {
 
 // ──────────── KALSHI FETCH (multi-page, MVE excluded) ────────────
 
-async function fetchKalshiMarkets(maxPages = 10): Promise<MarketData[]> {
+async function fetchKalshiMarkets(maxPages = 25): Promise<MarketData[]> {
   const allMarkets: MarketData[] = [];
   let cursor: string | undefined;
   let skipMve = 0, skipType = 0, skipQ = 0, skipPrice = 0;
@@ -1053,10 +1053,10 @@ function screenKalshiArbCandidates(markets: MarketData[]): MarketData[] {
   const candidates: MarketData[] = [];
   for (const m of markets) {
     if (isToxicMarket(m.ticker || "", m.question)) continue;
-    // Loose screen: listing prices suggest possible arb (< $0.99)
-    // We'll verify with orderbook in phase 2
+    // Loose screen: listing prices suggest possible arb (< $1.02)
+    // Wider net — orderbook verification in phase 2 enforces the real $0.97 ceiling
     const totalCost = m.yes_price + m.no_price;
-    if (totalCost < 0.99 && m.ticker) {
+    if (totalCost < 1.02 && m.ticker) {
       candidates.push(m);
     }
   }
@@ -1065,7 +1065,7 @@ function screenKalshiArbCandidates(markets: MarketData[]): MarketData[] {
 }
 
 // Phase 2: Verify candidates against real orderbook data
-async function findKalshiInternalArbs(markets: MarketData[], maxVerify = 20): Promise<KalshiInternalArb[]> {
+async function findKalshiInternalArbs(markets: MarketData[], maxVerify = 40): Promise<KalshiInternalArb[]> {
   const candidates = screenKalshiArbCandidates(markets);
   console.log(`Kalshi arb screen: ${candidates.length} candidates from ${markets.length} markets`);
 
