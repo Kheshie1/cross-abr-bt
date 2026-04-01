@@ -2010,9 +2010,9 @@ Deno.serve(async (req) => {
       };
 
       const allCrossArbs = [
-        ...findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.2),
-        ...findCrossPlatformArbs(polymarkets, myriadMarkets, 0.2),
-        ...findCrossPlatformArbs(kalshiMarkets, myriadMarkets, 0.2),
+        ...findCrossPlatformArbs(polymarkets, kalshiMarkets, 0.45),
+        ...findCrossPlatformArbs(polymarkets, myriadMarkets, 0.45),
+        ...findCrossPlatformArbs(kalshiMarkets, myriadMarkets, 0.45),
       ].filter(timeFilter);
 
       // Deduplicate
