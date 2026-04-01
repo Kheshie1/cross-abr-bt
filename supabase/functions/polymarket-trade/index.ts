@@ -2354,7 +2354,7 @@ Deno.serve(async (req) => {
       // If all cross-platform orders failed, fall back to Kalshi-only
       if (allInserts.length === 0) {
         console.log(`Auto-trade: all cross-platform orders failed, falling back to Kalshi internal arbs...`);
-        const kalshiArbs = findKalshiInternalArbs(kalshiMarkets);
+        const kalshiArbs = await findKalshiInternalArbs(kalshiMarkets);
         console.log(`Auto-trade: ${kalshiArbs.length} Kalshi internal arbs found`);
 
         const kalshiNew = kalshiArbs.filter(a => {
