@@ -976,7 +976,7 @@ function findCrossPlatformArbs(
         total_cost: Number(bestCost.toFixed(4)),
         spread_pct: Number(spreadPct.toFixed(2)),
         guaranteed_profit: Number((1 - bestCost).toFixed(4)),
-        is_arb: bestCost < 0.97, // STRICT: 3%+ guaranteed profit to cover fees/slippage
+        is_arb: bestCost < 0.995, // Relaxed: 0.5%+ guaranteed profit
       });
     }
   }
