@@ -1056,7 +1056,7 @@ function screenKalshiArbCandidates(markets: MarketData[]): MarketData[] {
     // Loose screen: listing prices suggest possible arb (< $1.02)
     // Wider net — orderbook verification in phase 2 enforces the real $0.97 ceiling
     const totalCost = m.yes_price + m.no_price;
-    if (totalCost < 1.02 && m.ticker) {
+    if (totalCost < 1.05 && m.ticker) {
       candidates.push(m);
     }
   }
