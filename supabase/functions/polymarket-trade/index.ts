@@ -984,7 +984,57 @@ function findCrossPlatformArbs(
   return arbs.sort((a, b) => b.spread_pct - a.spread_pct);
 }
 
-// ──────────── KALSHI INTERNAL ARB FINDER ────────────
+// ──────────── KALSHI ORDERBOOK FETCHER ────────────
+
+interface OrderbookLevel {
+  price: number; // dollars (0-1)
+  quantity: number;
+}
+
+interface KalshiOrderbook {
+  yes_bids: OrderbookLevel[];
+  no_bids: OrderbookLevel[];
+  // Derived: to BUY YES, you pay (1 - best_no_bid); to BUY NO, you pay (1 - best_yes_bid)
+  yes_ask: number; // cheapest price to buy YES
+  no_ask: number;  // cheapest price to buy NO
+}
+
+async function fetchKalshiOrderbook(ticker: string): Promise<KalshiOrderbook | null> {
+  try {
+    const path = `/trade-api/v2/markets/${ticker}/orderbook?depth=5`;
+    const res = await fetch(`https://api.elections.kalshi.com${path}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const ob = data.orderbook;
+    if (!ob) return null;
+
+    // Parse yes_dollars and no_dollars: arrays of [price_string, quantity]
+    const yesBids: OrderbookLevel[] = (ob.yes_dollars || []).map((level: any) => ({
+      price: parseFloat(level[0]),
+      quantity: level[1],
+    })).sort((a: OrderbookLevel, b: OrderbookLevel) => b.price - a.price); // best bid first
+
+    const noBids: OrderbookLevel[] = (ob.no_dollars || []).map((level: any) => ({
+      price: parseFloat(level[0]),
+      quantity: level[1],
+    })).sort((a: OrderbookLevel, b: OrderbookLevel) => b.price - a.price);
+
+    // In Kalshi binary markets:
+    // - To BUY YES: you can either hit existing YES asks, or equivalently pay (1 - best_no_bid)
+    //   If someone bids NO at $0.40, you can buy YES at $0.60
+    // - To BUY NO: pay (1 - best_yes_bid)
+    //   If someone bids YES at $0.30, you can buy NO at $0.70
+    const yesAsk = noBids.length > 0 ? 1 - noBids[0].price : 1;
+    const noAsk = yesBids.length > 0 ? 1 - yesBids[0].price : 1;
+
+    return { yes_bids: yesBids, no_bids: noBids, yes_ask: yesAsk, no_ask: noAsk };
+  } catch (e) {
+    console.warn(`Orderbook fetch failed for ${ticker}: ${e}`);
+    return null;
+  }
+}
+
+// ──────────── KALSHI INTERNAL ARB FINDER (ORDERBOOK-VERIFIED) ────────────
 
 interface KalshiInternalArb {
   market: MarketData;
@@ -993,29 +1043,84 @@ interface KalshiInternalArb {
   total_cost: number;
   guaranteed_profit: number;
   spread_pct: number;
+  orderbook_verified: boolean;
+  yes_depth: number; // contracts available at this price
+  no_depth: number;
 }
 
-function findKalshiInternalArbs(markets: MarketData[]): KalshiInternalArb[] {
-  const arbs: KalshiInternalArb[] = [];
+// Phase 1: Quick screen using listing prices (fast, no extra API calls)
+function screenKalshiArbCandidates(markets: MarketData[]): MarketData[] {
+  const candidates: MarketData[] = [];
   for (const m of markets) {
-    // Skip toxic market types
     if (isToxicMarket(m.ticker || "", m.question)) continue;
-
+    // Loose screen: listing prices suggest possible arb (< $0.99)
+    // We'll verify with orderbook in phase 2
     const totalCost = m.yes_price + m.no_price;
-    // STRICT: Must cost less than $0.97 for guaranteed profit after fees + slippage
-    // Previous $0.99 threshold was too loose — Kalshi bid/ask spreads created phantom arbs
-    if (totalCost < 0.97) {
-      const profit = 1 - totalCost;
-      arbs.push({
-        market: m,
-        yes_price: m.yes_price,
-        no_price: m.no_price,
-        total_cost: totalCost,
-        guaranteed_profit: profit,
-        spread_pct: Number(((profit / totalCost) * 100).toFixed(2)),
-      });
+    if (totalCost < 0.99 && m.ticker) {
+      candidates.push(m);
     }
   }
+  // Sort by lowest cost first (most promising)
+  return candidates.sort((a, b) => (a.yes_price + a.no_price) - (b.yes_price + b.no_price));
+}
+
+// Phase 2: Verify candidates against real orderbook data
+async function findKalshiInternalArbs(markets: MarketData[], maxVerify = 20): Promise<KalshiInternalArb[]> {
+  const candidates = screenKalshiArbCandidates(markets);
+  console.log(`Kalshi arb screen: ${candidates.length} candidates from ${markets.length} markets`);
+
+  // Only verify top candidates to stay within compute limits
+  const toVerify = candidates.slice(0, maxVerify);
+  const arbs: KalshiInternalArb[] = [];
+
+  // Fetch orderbooks in parallel (batches of 5 to avoid rate limits)
+  for (let i = 0; i < toVerify.length; i += 5) {
+    const batch = toVerify.slice(i, i + 5);
+    const orderbooks = await Promise.all(
+      batch.map(m => fetchKalshiOrderbook(m.ticker!))
+    );
+
+    for (let j = 0; j < batch.length; j++) {
+      const m = batch[j];
+      const ob = orderbooks[j];
+      if (!ob) continue;
+
+      // Use REAL orderbook ask prices instead of listing mid-prices
+      const yesAsk = ob.yes_ask;
+      const noAsk = ob.no_ask;
+      const totalCost = yesAsk + noAsk;
+
+      // STRICT: 3%+ guaranteed profit at actual executable prices
+      if (totalCost < 0.97) {
+        const profit = 1 - totalCost;
+        // Get minimum depth (contracts available) at these prices
+        const yesDepth = ob.no_bids.length > 0 ? ob.no_bids[0].quantity : 0;
+        const noDepth = ob.yes_bids.length > 0 ? ob.yes_bids[0].quantity : 0;
+
+        // Need at least 1 contract of depth on each side
+        if (yesDepth < 1 || noDepth < 1) {
+          console.log(`  Skip ${m.ticker}: insufficient depth (YES:${yesDepth}, NO:${noDepth})`);
+          continue;
+        }
+
+        console.log(`  ✅ VERIFIED ARB: ${m.ticker} YES_ask=$${yesAsk.toFixed(3)} NO_ask=$${noAsk.toFixed(3)} total=$${totalCost.toFixed(3)} profit=$${profit.toFixed(3)} depth=${Math.min(yesDepth, noDepth)}`);
+
+        arbs.push({
+          market: m,
+          yes_price: yesAsk,
+          no_price: noAsk,
+          total_cost: totalCost,
+          guaranteed_profit: profit,
+          spread_pct: Number(((profit / totalCost) * 100).toFixed(2)),
+          orderbook_verified: true,
+          yes_depth: yesDepth,
+          no_depth: noDepth,
+        });
+      }
+    }
+  }
+
+  console.log(`Kalshi orderbook-verified arbs: ${arbs.length} genuine arbs from ${toVerify.length} checked`);
   return arbs.sort((a, b) => b.spread_pct - a.spread_pct);
 }
 
@@ -2038,7 +2143,7 @@ Deno.serve(async (req) => {
       // ── Kalshi-only internal arbs as fallback ──
       if (toExecute.length === 0) {
         console.log(`Auto-trade: no cross-platform arbs, trying Kalshi internal arbs...`);
-        const kalshiArbs = findKalshiInternalArbs(kalshiMarkets);
+        const kalshiArbs = await findKalshiInternalArbs(kalshiMarkets);
         console.log(`Auto-trade: ${kalshiArbs.length} Kalshi internal arbs found`);
 
         const kalshiNew = kalshiArbs.filter(a => {
@@ -2249,7 +2354,7 @@ Deno.serve(async (req) => {
       // If all cross-platform orders failed, fall back to Kalshi-only
       if (allInserts.length === 0) {
         console.log(`Auto-trade: all cross-platform orders failed, falling back to Kalshi internal arbs...`);
-        const kalshiArbs = findKalshiInternalArbs(kalshiMarkets);
+        const kalshiArbs = await findKalshiInternalArbs(kalshiMarkets);
         console.log(`Auto-trade: ${kalshiArbs.length} Kalshi internal arbs found`);
 
         const kalshiNew = kalshiArbs.filter(a => {
