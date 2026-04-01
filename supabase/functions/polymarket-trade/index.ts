@@ -2143,7 +2143,7 @@ Deno.serve(async (req) => {
       // ── Kalshi-only internal arbs as fallback ──
       if (toExecute.length === 0) {
         console.log(`Auto-trade: no cross-platform arbs, trying Kalshi internal arbs...`);
-        const kalshiArbs = findKalshiInternalArbs(kalshiMarkets);
+        const kalshiArbs = await findKalshiInternalArbs(kalshiMarkets);
         console.log(`Auto-trade: ${kalshiArbs.length} Kalshi internal arbs found`);
 
         const kalshiNew = kalshiArbs.filter(a => {
