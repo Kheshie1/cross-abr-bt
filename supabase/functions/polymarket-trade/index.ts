@@ -1091,7 +1091,7 @@ async function findKalshiInternalArbs(markets: MarketData[], maxVerify = 80): Pr
       const totalCost = yesAsk + noAsk;
 
       // STRICT: 3%+ guaranteed profit at actual executable prices
-      if (totalCost < 0.97) {
+      if (totalCost < 0.995) {
         const profit = 1 - totalCost;
         // Get minimum depth (contracts available) at these prices
         const yesDepth = ob.no_bids.length > 0 ? ob.no_bids[0].quantity : 0;
