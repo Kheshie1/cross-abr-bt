@@ -2431,9 +2431,12 @@ Deno.serve(async (req) => {
           });
         }
 
-        return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit arb pairs found." }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        // All arb approaches failed — try value bets
+        console.log(`Auto-trade: all arb paths exhausted, falling back to value bets...`);
+        return await executeValueBets(
+          supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR,
+          slotsAvailable, tradedMarketIds, tradedQuestions,
+        );
       }
 
       const { data: trades, error: tradeErr } = await supabase
