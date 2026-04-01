@@ -1002,7 +1002,9 @@ function findKalshiInternalArbs(markets: MarketData[]): KalshiInternalArb[] {
     if (isToxicMarket(m.ticker || "", m.question)) continue;
 
     const totalCost = m.yes_price + m.no_price;
-    if (totalCost < 0.99) { // Must cost less than $0.99 for guaranteed profit after fees
+    // STRICT: Must cost less than $0.97 for guaranteed profit after fees + slippage
+    // Previous $0.99 threshold was too loose — Kalshi bid/ask spreads created phantom arbs
+    if (totalCost < 0.97) {
       const profit = 1 - totalCost;
       arbs.push({
         market: m,
