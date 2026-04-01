@@ -2155,10 +2155,12 @@ Deno.serve(async (req) => {
         const kalshiToExecute = kalshiNew.slice(0, Math.min(slotsAvailable, 3));
 
         if (kalshiToExecute.length === 0) {
-          console.log(`Auto-trade: no guaranteed-profit arb pairs available.`);
-          return new Response(JSON.stringify({ skipped: true, reason: "No guaranteed-profit arb pairs found." }), {
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
+          // Fallback: value betting on high-edge Kalshi markets
+          console.log(`Auto-trade: no arb pairs, falling back to value bets...`);
+          return await executeValueBets(
+            supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR,
+            slotsAvailable, tradedMarketIds, tradedQuestions,
+          );
         }
 
         const kalshiInserts = [];
@@ -2196,7 +2198,6 @@ Deno.serve(async (req) => {
             console.log(`✅ Kalshi NO: ${ticker} @ ${(arb.no_price * 100).toFixed(0)}¢`);
           } catch (e) {
             console.error(`❌ Kalshi NO order failed: ${e}`);
-            // Enforce pair-only mode: skip DB insert for partial legs.
             continue;
           }
 
@@ -2253,8 +2254,12 @@ Deno.serve(async (req) => {
           });
         }
 
-        // Sports game winner fallback (value betting disabled)
-        // No additional fallback needed — sports strategy already tried above
+        // Even arb orders failed, try value bets
+        console.log(`Auto-trade: arb orders failed, falling back to value bets...`);
+        return await executeValueBets(
+          supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR,
+          slotsAvailable, tradedMarketIds, tradedQuestions,
+        );
       }
 
       // Step 5: Execute real orders on Polymarket + record in DB
