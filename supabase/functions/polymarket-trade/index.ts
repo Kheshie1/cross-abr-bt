@@ -1053,10 +1053,10 @@ function screenKalshiArbCandidates(markets: MarketData[]): MarketData[] {
   const candidates: MarketData[] = [];
   for (const m of markets) {
     if (isToxicMarket(m.ticker || "", m.question)) continue;
-    // Loose screen: listing prices suggest possible arb (< $0.99)
-    // We'll verify with orderbook in phase 2
+    // Loose screen: listing prices suggest possible arb (< $1.02)
+    // Wider net — orderbook verification in phase 2 enforces the real $0.97 ceiling
     const totalCost = m.yes_price + m.no_price;
-    if (totalCost < 0.99 && m.ticker) {
+    if (totalCost < 1.02 && m.ticker) {
       candidates.push(m);
     }
   }
