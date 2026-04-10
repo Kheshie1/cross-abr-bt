@@ -1965,8 +1965,11 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ──── AUTO TRADE (real execution + balance-based sizing) ────
+    // ──── AUTO TRADE (DEMO MODE — $100K virtual balance, no real orders) ────
     if (action === "auto_trade") {
+      const DEMO_MODE = true;
+      const DEMO_INITIAL_BALANCE = 100000;
+
       const { data: settings } = await supabase
         .from("bot_settings")
         .select("*")
@@ -1985,56 +1988,37 @@ Deno.serve(async (req) => {
         console.log(`Auto-sync completed before trade cycle: ${syncResult.synced} settled, $${syncResult.totalPnl.toFixed(2)} P&L`);
       }
 
-      const privateKey = Deno.env.get("POLYMARKET_PRIVATE_KEY");
-      if (!privateKey) {
-        return new Response(JSON.stringify({ skipped: true, reason: "No private key configured" }), {
+      // DEMO: Calculate virtual balance from DB trades
+      const { data: allDemoTrades } = await supabase
+        .from("polymarket_trades")
+        .select("price, size, profit_loss, status")
+        .in("status", ["live", "executed", "settled", "expired"]);
+
+      let totalSpent = 0;
+      let totalRealized = 0;
+      for (const t of (allDemoTrades || [])) {
+        totalSpent += (t.price || 0) * (t.size || 0);
+        if (t.status === "settled" || t.status === "expired" || t.status === "executed") {
+          totalRealized += (t.profit_loss || 0);
+        }
+      }
+      const liveCapital = (allDemoTrades || []).filter((t: any) => t.status === "live").reduce((s: number, t: any) => s + (t.price || 0) * (t.size || 0), 0);
+      const cashBalance = DEMO_INITIAL_BALANCE + totalRealized - liveCapital;
+      const MIN_BALANCE_FLOOR = 0;
+      const availableCash = Math.max(0, cashBalance);
+      console.log(`DEMO auto-trade: Virtual cash = $${cashBalance.toFixed(2)} (spent: $${totalSpent.toFixed(2)}, realized: $${totalRealized.toFixed(2)}, live: $${liveCapital.toFixed(2)})`);
+
+      if (availableCash < 1) {
+        return new Response(JSON.stringify({ skipped: true, reason: `Demo balance too low: $${availableCash.toFixed(2)}` }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      // Step 1: Fetch Kalshi balance for trade sizing
-      const MIN_BALANCE_FLOOR = 0; // No reserve — use every cent
-      let cashBalance = 0;
-      try {
-        const kalshiBal = await fetchKalshiBalance();
-        cashBalance = kalshiBal.balance;
-        console.log(`Auto-trade: Kalshi cash = $${cashBalance.toFixed(2)}`);
-      } catch (e) {
-        console.error("Failed to fetch Kalshi balance:", e);
-      }
-
-      const availableCash = Math.max(0, cashBalance - MIN_BALANCE_FLOOR);
-      if (availableCash < 0.10) {
-        console.log(`Auto-trade: skipped — available cash after $${MIN_BALANCE_FLOOR} floor = $${availableCash.toFixed(2)} (total: $${cashBalance.toFixed(2)})`);
-        return new Response(JSON.stringify({ skipped: true, reason: `Balance too close to $${MIN_BALANCE_FLOOR} floor (available: $${availableCash.toFixed(2)})` }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-
-      // Step 2: Check LIVE on-chain positions (not DB records which include old/resolved trades)
-      const wallet = new Wallet(privateKey);
-      const eoaAddress = wallet.address;
-      const proxyAddress = deriveProxyAddress(eoaAddress);
-      const safeAddress = deriveSafeAddress(eoaAddress);
-      const allAddresses = [eoaAddress, proxyAddress, safeAddress, KNOWN_WALLET, KNOWN_WALLET_2].filter((a, i, arr) => a && a !== "" && arr.indexOf(a) === i);
-
-      const positionPromises = allAddresses.map(addr =>
-        fetch(`https://data-api.polymarket.com/positions?user=${addr}`)
-          .then(r => r.ok ? r.json() : [])
-          .then(data => (data || []).filter((p: any) => Number(p.size || 0) > 0))
-          .catch(() => [])
-      );
-      const posResults = await Promise.all(positionPromises);
-      const livePositions = posResults.flat();
-      const openPositions = livePositions.length;
-      console.log(`Auto-trade: ${openPositions} live on-chain positions`);
-
-      // Also get traded market IDs/questions from DB for duplicate prevention
-      // FIX: check ALL active statuses, not just "executed" (trades are saved as "live")
-      const MAX_PER_MARKET = 3; // Max trades per unique market question
+      // DEMO: Count open positions from DB only (no on-chain check needed)
+      const MAX_PER_MARKET = 3;
       const { data: existingTrades } = await supabase
         .from("polymarket_trades")
-        .select("market_id, market_question")
+        .select("market_id, market_question, status")
         .in("status", ["live", "executed", "pending"]);
 
       const tradedMarketIds = new Set((existingTrades || []).map((t: any) => t.market_id));
@@ -2047,25 +2031,28 @@ Deno.serve(async (req) => {
         if (count >= MAX_PER_MARKET) tradedQuestions.add(nq);
       }
 
+      const openPositions = (existingTrades || []).filter((t: any) => t.status === "live").length;
+
       if (openPositions >= settings.max_open_trades) {
-        console.log(`Auto-trade: skipped — ${openPositions}/${settings.max_open_trades} positions filled`);
-        return new Response(JSON.stringify({ skipped: true, reason: "Max open arb positions reached" }), {
+        console.log(`DEMO auto-trade: skipped — ${openPositions}/${settings.max_open_trades} positions filled`);
+        return new Response(JSON.stringify({ skipped: true, reason: "Max open positions reached" }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      // Step 3: Size trades — spread across multiple slots
-      const slotsAvailable = Math.min(3, settings.max_open_trades - openPositions); // Up to 3 trades per cycle
-      const perTradeSize = Math.min(availableCash / Math.max(slotsAvailable, 1), MAX_SINGLE_TRADE_SIZE);
+      // DEMO: Size trades — up to $500 per trade for aggressive demo
+      const DEMO_MAX_PER_TRADE = 500;
+      const slotsAvailable = Math.min(3, settings.max_open_trades - openPositions);
+      const perTradeSize = Math.min(availableCash / Math.max(slotsAvailable, 1), DEMO_MAX_PER_TRADE);
 
-      if (perTradeSize < 0.10) {
-        console.log(`Auto-trade: trade size too small ($${perTradeSize.toFixed(2)})`);
-        return new Response(JSON.stringify({ skipped: true, reason: `Trade size too small: $${perTradeSize.toFixed(2)}` }), {
+      if (perTradeSize < 1) {
+        return new Response(JSON.stringify({ skipped: true, reason: `Demo trade size too small: $${perTradeSize.toFixed(2)}` }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      console.log(`Auto-trade: sizing $${perTradeSize.toFixed(2)}/trade (${slotsAvailable} slots, $${availableCash.toFixed(2)} available, $${cashBalance.toFixed(2)} total)`);
+      console.log(`DEMO auto-trade: sizing $${perTradeSize.toFixed(2)}/trade (${slotsAvailable} slots, $${availableCash.toFixed(2)} available)`);
+
 
       // Step 4: Find arbs — CAUTIOUS MODE: only guaranteed-profit trades resolving in 1-2 days
       const [polymarkets, kalshiMarkets, myriadMarkets] = await Promise.all([
@@ -2129,8 +2116,8 @@ Deno.serve(async (req) => {
         const kalshiToExecute = kalshiNew.slice(0, Math.min(slotsAvailable, 3));
 
         if (kalshiToExecute.length === 0) {
-          console.log(`Auto-trade: no arb pairs found, skipping (value betting disabled)`);
-          return new Response(JSON.stringify({ skipped: true, reason: "No cross-platform arb pairs found (value betting disabled)" }), {
+          console.log(`DEMO auto-trade: no arb pairs found, skipping`);
+          return new Response(JSON.stringify({ skipped: true, reason: "No arb pairs found" }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
@@ -2142,252 +2129,25 @@ Deno.serve(async (req) => {
           const ticker = arb.market.ticker;
           if (!ticker) continue;
 
-          // Re-check balance before each trade
-          const currentBal = await fetchKalshiBalance();
-          const currentAvailable = Math.max(0, currentBal.balance - MIN_BALANCE_FLOOR);
-          const tradeSize = Math.min(perTradeSize, currentAvailable * 0.5);
-           if (tradeSize < 0.10) {
-            console.log(`Auto-trade: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
-            break;
-          }
-
-          // Buy YES side
-          let yesOrderId: string | null = null;
-          try {
-            const yesResult = await placeKalshiOrder(ticker, "yes", arb.yes_price, tradeSize);
-            yesOrderId = yesResult?.order_id || yesResult?.id || null;
-            console.log(`✅ Kalshi YES: ${ticker} @ ${(arb.yes_price * 100).toFixed(0)}¢`);
-          } catch (e) {
-            console.error(`❌ Kalshi YES order failed: ${e}`);
-            continue;
-          }
-
-          // Buy NO side
-          let noOrderId: string | null = null;
-          try {
-            const noResult = await placeKalshiOrder(ticker, "no", 1 - arb.no_price, tradeSize);
-            noOrderId = noResult?.order_id || noResult?.id || null;
-            console.log(`✅ Kalshi NO: ${ticker} @ ${(arb.no_price * 100).toFixed(0)}¢`);
-          } catch (e) {
-            console.error(`❌ Kalshi NO order failed: ${e}`);
-            continue;
-          }
-
+          const tradeSize = perTradeSize;
           const arbProfit = arb.guaranteed_profit * tradeSize;
-          kalshiResults.push({ question: arb.market.question, spread: arb.spread_pct, ticker });
+          const demoOrderId = `DEMO-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-          kalshiInserts.push(
-            {
-              market_id: arb.market.id,
-              market_question: arb.market.question,
-              token_id: ticker,
-              side: "BUY_YES@KALSHI",
-              price: arb.yes_price,
-              size: tradeSize,
-              status: "live",
-              order_id: yesOrderId,
-              profit_loss: arbProfit,
-              resolved_at: arb.market.end_date || null,
-            },
-            {
-              market_id: arb.market.id,
-              market_question: arb.market.question,
-              token_id: ticker,
-              side: "BUY_NO@KALSHI",
-              price: arb.no_price,
-              size: tradeSize,
-              status: "live",
-              order_id: noOrderId,
-              profit_loss: 0,
-              resolved_at: arb.market.end_date || null,
-            }
-          );
-        }
+          console.log(`📝 DEMO Kalshi arb: ${ticker} YES@${(arb.yes_price * 100).toFixed(0)}¢ + NO@${(arb.no_price * 100).toFixed(0)}¢ | profit: $${arbProfit.toFixed(2)}`);
 
-        if (kalshiInserts.length > 0) {
-          const { data: trades, error: tradeErr } = await supabase
-            .from("polymarket_trades")
-            .insert(kalshiInserts)
-            .select();
-          if (tradeErr) throw tradeErr;
-
-          for (const r of kalshiResults) {
-            console.log(`✅ Kalshi arb: ${r.question} | ${r.spread}% spread`);
-          }
-
-          return new Response(JSON.stringify({
-            executed: true,
-            strategy: "kalshi_internal",
-            count: kalshiResults.length,
-            trades,
-            results: kalshiResults,
-          }), {
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-
-        // Arb orders failed — no value bet fallback
-        console.log(`Auto-trade: arb orders failed, skipping (value betting disabled)`);
-        return new Response(JSON.stringify({ skipped: true, reason: "Arb orders failed, no fallback (value betting disabled)" }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-
-      // Step 5: Execute real orders on Polymarket + record in DB
-      const allInserts = [];
-      const executionResults = [];
-
-      for (const arb of toExecute) {
-        const arbProfit = arb.guaranteed_profit * perTradeSize;
-        let polyOrderResult = null;
-        let orderStatus = "executed";
-
-        // Try to place real order on Polymarket leg
-        const isPolyYes = arb.buy_yes_platform === "polymarket";
-        const polyTokenId = isPolyYes ? arb.poly_market.token_id_yes : arb.poly_market.token_id_no;
-        const polyPrice = isPolyYes ? arb.buy_yes_price : arb.buy_no_price;
-
-        if (polyTokenId && polyPrice > 0) {
-          try {
-            polyOrderResult = await placePolymarketOrder(
-              privateKey,
-              polyTokenId,
-              polyPrice,
-              perTradeSize / polyPrice,
-              "BUY",
-              true
-            );
-            orderStatus = "live";
-            console.log(`✅ LIVE Poly order: ${arb.poly_market.question} @ $${polyPrice}`);
-          } catch (orderErr) {
-            console.error(`❌ Poly order failed, skipping this arb: ${orderErr}`);
-            continue; // Skip — no simulations
-          }
-        } else {
-          console.log(`❌ No token ID for Poly leg, skipping`);
-          continue; // Skip — no simulations
-        }
-
-        // Try to place real order on Kalshi leg
-        let kalshiLegStatus = "simulated";
-        let kalshiOrderId: string | null = null;
-        const kalshiTicker = arb.kalshi_market.ticker;
-        const isKalshiNo = isPolyYes; // if Poly=YES, Kalshi=NO
-        const kalshiPrice = isKalshiNo ? arb.buy_no_price : arb.buy_yes_price;
-
-        if (kalshiTicker && kalshiPrice > 0) {
-          try {
-            const kalshiResult = await placeKalshiOrder(
-              kalshiTicker,
-              isKalshiNo ? "no" : "yes",
-              isKalshiNo ? (1 - kalshiPrice) : kalshiPrice,
-              perTradeSize,
-            );
-            kalshiLegStatus = "live";
-            kalshiOrderId = kalshiResult?.order_id || kalshiResult?.id || null;
-            console.log(`✅ LIVE Kalshi order: ${kalshiTicker}`);
-          } catch (kalshiErr) {
-            console.error(`❌ Kalshi order failed, skipping this arb: ${kalshiErr}`);
-            continue; // Skip — no simulations
-          }
-        } else {
-          console.log(`❌ No Kalshi ticker, skipping`);
-          continue; // Skip — no simulations
-        }
-
-        executionResults.push({ question: arb.poly_market.question, spread: arb.spread_pct, status: orderStatus, kalshiStatus: kalshiLegStatus, orderId: polyOrderResult?.orderID });
-
-        const marketEndDate = arb.poly_market.end_date || arb.kalshi_market.end_date || null;
-
-        allInserts.push(
-          {
-            market_id: arb.poly_market.id,
-            market_question: arb.poly_market.question,
-            token_id: polyTokenId || arb.buy_yes_platform,
-            side: `BUY_${isPolyYes ? "YES" : "NO"}@POLYMARKET`,
-            price: polyPrice,
-            size: perTradeSize,
-            status: orderStatus,
-            order_id: polyOrderResult?.orderID || null,
-            profit_loss: arbProfit,
-            resolved_at: marketEndDate,
-          },
-          {
-            market_id: arb.poly_market.id,
-            market_question: arb.poly_market.question,
-            token_id: arb.buy_no_platform === "kalshi" ? (arb.kalshi_market.ticker || "kalshi") : (arb.poly_market.token_id_no || "cross"),
-            side: `BUY_${isPolyYes ? "NO" : "YES"}@KALSHI`,
-            price: isPolyYes ? arb.buy_no_price : arb.buy_yes_price,
-            size: perTradeSize,
-            status: kalshiLegStatus,
-            order_id: kalshiOrderId,
-            profit_loss: 0,
-            resolved_at: marketEndDate,
-          }
-        );
-      }
-
-      // If all cross-platform orders failed, fall back to Kalshi-only
-      if (allInserts.length === 0) {
-        console.log(`Auto-trade: all cross-platform orders failed, falling back to Kalshi internal arbs...`);
-        const kalshiArbs = await findKalshiInternalArbs(kalshiMarkets);
-        console.log(`Auto-trade: ${kalshiArbs.length} Kalshi internal arbs found`);
-
-        const kalshiNew = kalshiArbs.filter(a => {
-          if (tradedMarketIds.has(a.market.id)) return false;
-          if (tradedQuestions.has(normalize(a.market.question))) return false;
-          return true;
-        });
-
-        const kalshiToExecute = kalshiNew.slice(0, Math.min(slotsAvailable, 3));
-        const kalshiInserts = [];
-        const kalshiResults = [];
-
-        for (const arb of kalshiToExecute) {
-          const ticker = arb.market.ticker;
-          if (!ticker) continue;
-
-          const currentBal = await fetchKalshiBalance();
-          const currentAvailable = Math.max(0, currentBal.balance - MIN_BALANCE_FLOOR);
-          const tradeSize = Math.min(perTradeSize, currentAvailable * 0.5);
-          if (tradeSize < 0.10) {
-            console.log(`Auto-trade: stopping — available cash $${currentAvailable.toFixed(2)} too low`);
-            break;
-          }
-
-          let yesOrderId: string | null = null;
-          try {
-            const yesResult = await placeKalshiOrder(ticker, "yes", arb.yes_price, tradeSize);
-            yesOrderId = yesResult?.order_id || yesResult?.id || null;
-            console.log(`✅ Kalshi YES: ${ticker} @ ${(arb.yes_price * 100).toFixed(0)}¢`);
-          } catch (e) {
-            console.error(`❌ Kalshi YES failed: ${e}`);
-            continue;
-          }
-
-          let noOrderId: string | null = null;
-          try {
-            const noResult = await placeKalshiOrder(ticker, "no", 1 - arb.no_price, tradeSize);
-            noOrderId = noResult?.order_id || noResult?.id || null;
-            console.log(`✅ Kalshi NO: ${ticker} @ ${(arb.no_price * 100).toFixed(0)}¢`);
-          } catch (e) {
-            console.error(`❌ Kalshi NO failed: ${e}`);
-          }
-
-          const arbProfit = arb.guaranteed_profit * tradeSize;
-          kalshiResults.push({ question: arb.market.question, spread: arb.spread_pct, ticker });
+          kalshiResults.push({ question: arb.market.question, spread: arb.spread_pct, ticker, profit: arbProfit });
 
           kalshiInserts.push(
             {
               market_id: arb.market.id, market_question: arb.market.question,
-              token_id: ticker, side: "BUY_YES@KALSHI", price: arb.yes_price,
-              size: tradeSize, status: "live", order_id: yesOrderId,
+              token_id: ticker, side: "BUY_YES@KALSHI_DEMO", price: arb.yes_price,
+              size: tradeSize, status: "live", order_id: demoOrderId + "-YES",
               profit_loss: arbProfit, resolved_at: arb.market.end_date || null,
             },
             {
               market_id: arb.market.id, market_question: arb.market.question,
-              token_id: ticker, side: "BUY_NO@KALSHI", price: arb.no_price,
-              size: tradeSize, status: noOrderId ? "live" : "failed", order_id: noOrderId,
+              token_id: ticker, side: "BUY_NO@KALSHI_DEMO", price: arb.no_price,
+              size: tradeSize, status: "live", order_id: demoOrderId + "-NO",
               profit_loss: 0, resolved_at: arb.market.end_date || null,
             }
           );
@@ -2397,34 +2157,122 @@ Deno.serve(async (req) => {
           const { data: trades, error: tradeErr } = await supabase
             .from("polymarket_trades").insert(kalshiInserts).select();
           if (tradeErr) throw tradeErr;
-          return new Response(JSON.stringify({ executed: true, strategy: "kalshi_internal_fallback", count: kalshiResults.length, trades, results: kalshiResults }), {
+
+          return new Response(JSON.stringify({
+            executed: true, demo: true, strategy: "kalshi_internal_demo",
+            count: kalshiResults.length, trades, results: kalshiResults,
+            virtualBalance: cashBalance - kalshiInserts.reduce((s, t) => s + t.price * t.size, 0),
+          }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
 
-        // All arb approaches failed — no value bet fallback
-        console.log(`Auto-trade: all arb paths exhausted, skipping (value betting disabled)`);
-        return new Response(JSON.stringify({ skipped: true, reason: "All arb paths exhausted (value betting disabled)" }), {
+        return new Response(JSON.stringify({ skipped: true, reason: "No arb candidates" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // Step 5: DEMO — simulate cross-platform arb fills (no real orders)
+      const allInserts = [];
+      const executionResults = [];
+
+      for (const arb of toExecute) {
+        const arbProfit = arb.guaranteed_profit * perTradeSize;
+        const isPolyYes = arb.buy_yes_platform === "polymarket";
+        const polyTokenId = isPolyYes ? arb.poly_market.token_id_yes : arb.poly_market.token_id_no;
+        const polyPrice = isPolyYes ? arb.buy_yes_price : arb.buy_no_price;
+        const kalshiTicker = arb.kalshi_market.ticker;
+        const kalshiPrice = isPolyYes ? arb.buy_no_price : arb.buy_yes_price;
+        const demoOrderId = `DEMO-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const marketEndDate = arb.poly_market.end_date || arb.kalshi_market.end_date || null;
+
+        console.log(`📝 DEMO cross-platform: ${arb.poly_market.question} | spread: ${arb.spread_pct}% | profit: $${arbProfit.toFixed(2)}`);
+
+        executionResults.push({ question: arb.poly_market.question, spread: arb.spread_pct, status: "demo", profit: arbProfit });
+
+        allInserts.push(
+          {
+            market_id: arb.poly_market.id,
+            market_question: arb.poly_market.question,
+            token_id: polyTokenId || arb.buy_yes_platform,
+            side: `BUY_${isPolyYes ? "YES" : "NO"}@POLYMARKET_DEMO`,
+            price: polyPrice,
+            size: perTradeSize,
+            status: "live",
+            order_id: demoOrderId + "-POLY",
+            profit_loss: arbProfit,
+            resolved_at: marketEndDate,
+          },
+          {
+            market_id: arb.poly_market.id,
+            market_question: arb.poly_market.question,
+            token_id: kalshiTicker || "kalshi",
+            side: `BUY_${isPolyYes ? "NO" : "YES"}@KALSHI_DEMO`,
+            price: kalshiPrice,
+            size: perTradeSize,
+            status: "live",
+            order_id: demoOrderId + "-KALSHI",
+            profit_loss: 0,
+            resolved_at: marketEndDate,
+          }
+        );
+      }
+
+      // If no cross-platform, try Kalshi internal (also demo)
+      if (allInserts.length === 0) {
+        console.log(`DEMO auto-trade: no cross-platform arbs, trying Kalshi internal...`);
+        const kalshiArbs = await findKalshiInternalArbs(kalshiMarkets);
+        const kalshiNew = kalshiArbs.filter(a => {
+          if (tradedMarketIds.has(a.market.id)) return false;
+          if (tradedQuestions.has(normalize(a.market.question))) return false;
+          return true;
+        });
+
+        for (const arb of kalshiNew.slice(0, slotsAvailable)) {
+          const ticker = arb.market.ticker;
+          if (!ticker) continue;
+          const arbProfit = arb.guaranteed_profit * perTradeSize;
+          const demoOrderId = `DEMO-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+          console.log(`📝 DEMO Kalshi internal: ${ticker} | profit: $${arbProfit.toFixed(2)}`);
+
+          allInserts.push(
+            {
+              market_id: arb.market.id, market_question: arb.market.question,
+              token_id: ticker, side: "BUY_YES@KALSHI_DEMO", price: arb.yes_price,
+              size: perTradeSize, status: "live", order_id: demoOrderId + "-YES",
+              profit_loss: arbProfit, resolved_at: arb.market.end_date || null,
+            },
+            {
+              market_id: arb.market.id, market_question: arb.market.question,
+              token_id: ticker, side: "BUY_NO@KALSHI_DEMO", price: arb.no_price,
+              size: perTradeSize, status: "live", order_id: demoOrderId + "-NO",
+              profit_loss: 0, resolved_at: arb.market.end_date || null,
+            }
+          );
+          executionResults.push({ question: arb.market.question, spread: arb.spread_pct, profit: arbProfit });
+        }
+      }
+
+      if (allInserts.length === 0) {
+        return new Response(JSON.stringify({ skipped: true, demo: true, reason: "No arb opportunities found" }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
       const { data: trades, error: tradeErr } = await supabase
-        .from("polymarket_trades")
-        .insert(allInserts)
-        .select();
-
+        .from("polymarket_trades").insert(allInserts).select();
       if (tradeErr) throw tradeErr;
 
-      for (const r of executionResults) {
-        console.log(`✅ Arb: ${r.question} | ${r.spread}% spread | ${r.status}${r.orderId ? ` | orderID: ${r.orderId}` : ""}`);
-      }
+      const totalCost = allInserts.reduce((s, t) => s + t.price * t.size, 0);
+      console.log(`📝 DEMO: ${executionResults.length} arb pairs placed, $${totalCost.toFixed(2)} virtual cost`);
 
       return new Response(JSON.stringify({
-        executed: true,
-        count: toExecute.length,
+        executed: true, demo: true,
+        count: executionResults.length,
         trades,
-        cashUsed: perTradeSize * toExecute.length,
+        virtualBalance: cashBalance - totalCost,
+        cashUsed: totalCost,
         perTradeSize,
         results: executionResults,
       }), {
