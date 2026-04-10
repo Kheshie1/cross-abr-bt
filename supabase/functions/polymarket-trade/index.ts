@@ -2015,6 +2015,7 @@ Deno.serve(async (req) => {
       }
 
       // DEMO: Count open positions from DB only (no on-chain check needed)
+      const MAX_PER_MARKET = 3;
       const { data: existingTrades } = await supabase
         .from("polymarket_trades")
         .select("market_id, market_question, status")
