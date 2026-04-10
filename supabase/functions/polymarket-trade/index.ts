@@ -2129,12 +2129,10 @@ Deno.serve(async (req) => {
         const kalshiToExecute = kalshiNew.slice(0, Math.min(slotsAvailable, 3));
 
         if (kalshiToExecute.length === 0) {
-          // Fallback: value betting on high-edge Kalshi markets
-          console.log(`Auto-trade: no arb pairs, falling back to value bets...`);
-          return await executeValueBets(
-            supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR,
-            slotsAvailable, tradedMarketIds, tradedQuestions,
-          );
+          console.log(`Auto-trade: no arb pairs found, skipping (value betting disabled)`);
+          return new Response(JSON.stringify({ skipped: true, reason: "No cross-platform arb pairs found (value betting disabled)" }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
         }
 
         const kalshiInserts = [];
@@ -2228,12 +2226,11 @@ Deno.serve(async (req) => {
           });
         }
 
-        // Even arb orders failed, try value bets
-        console.log(`Auto-trade: arb orders failed, falling back to value bets...`);
-        return await executeValueBets(
-          supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR,
-          slotsAvailable, tradedMarketIds, tradedQuestions,
-        );
+        // Arb orders failed — no value bet fallback
+        console.log(`Auto-trade: arb orders failed, skipping (value betting disabled)`);
+        return new Response(JSON.stringify({ skipped: true, reason: "Arb orders failed, no fallback (value betting disabled)" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
 
       // Step 5: Execute real orders on Polymarket + record in DB
@@ -2405,12 +2402,11 @@ Deno.serve(async (req) => {
           });
         }
 
-        // All arb approaches failed — try value bets
-        console.log(`Auto-trade: all arb paths exhausted, falling back to value bets...`);
-        return await executeValueBets(
-          supabase, kalshiMarkets, perTradeSize, MIN_BALANCE_FLOOR,
-          slotsAvailable, tradedMarketIds, tradedQuestions,
-        );
+        // All arb approaches failed — no value bet fallback
+        console.log(`Auto-trade: all arb paths exhausted, skipping (value betting disabled)`);
+        return new Response(JSON.stringify({ skipped: true, reason: "All arb paths exhausted (value betting disabled)" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
 
       const { data: trades, error: tradeErr } = await supabase
