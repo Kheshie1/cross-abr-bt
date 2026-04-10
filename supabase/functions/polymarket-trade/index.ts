@@ -2014,30 +2014,10 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Step 2: Check LIVE on-chain positions (not DB records which include old/resolved trades)
-      const wallet = new Wallet(privateKey);
-      const eoaAddress = wallet.address;
-      const proxyAddress = deriveProxyAddress(eoaAddress);
-      const safeAddress = deriveSafeAddress(eoaAddress);
-      const allAddresses = [eoaAddress, proxyAddress, safeAddress, KNOWN_WALLET, KNOWN_WALLET_2].filter((a, i, arr) => a && a !== "" && arr.indexOf(a) === i);
-
-      const positionPromises = allAddresses.map(addr =>
-        fetch(`https://data-api.polymarket.com/positions?user=${addr}`)
-          .then(r => r.ok ? r.json() : [])
-          .then(data => (data || []).filter((p: any) => Number(p.size || 0) > 0))
-          .catch(() => [])
-      );
-      const posResults = await Promise.all(positionPromises);
-      const livePositions = posResults.flat();
-      const openPositions = livePositions.length;
-      console.log(`Auto-trade: ${openPositions} live on-chain positions`);
-
-      // Also get traded market IDs/questions from DB for duplicate prevention
-      // FIX: check ALL active statuses, not just "executed" (trades are saved as "live")
-      const MAX_PER_MARKET = 3; // Max trades per unique market question
+      // DEMO: Count open positions from DB only (no on-chain check needed)
       const { data: existingTrades } = await supabase
         .from("polymarket_trades")
-        .select("market_id, market_question")
+        .select("market_id, market_question, status")
         .in("status", ["live", "executed", "pending"]);
 
       const tradedMarketIds = new Set((existingTrades || []).map((t: any) => t.market_id));
@@ -2050,25 +2030,28 @@ Deno.serve(async (req) => {
         if (count >= MAX_PER_MARKET) tradedQuestions.add(nq);
       }
 
+      const openPositions = (existingTrades || []).filter((t: any) => t.status === "live").length;
+
       if (openPositions >= settings.max_open_trades) {
-        console.log(`Auto-trade: skipped — ${openPositions}/${settings.max_open_trades} positions filled`);
-        return new Response(JSON.stringify({ skipped: true, reason: "Max open arb positions reached" }), {
+        console.log(`DEMO auto-trade: skipped — ${openPositions}/${settings.max_open_trades} positions filled`);
+        return new Response(JSON.stringify({ skipped: true, reason: "Max open positions reached" }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      // Step 3: Size trades — spread across multiple slots
-      const slotsAvailable = Math.min(3, settings.max_open_trades - openPositions); // Up to 3 trades per cycle
-      const perTradeSize = Math.min(availableCash / Math.max(slotsAvailable, 1), MAX_SINGLE_TRADE_SIZE);
+      // DEMO: Size trades — up to $500 per trade for aggressive demo
+      const DEMO_MAX_PER_TRADE = 500;
+      const slotsAvailable = Math.min(3, settings.max_open_trades - openPositions);
+      const perTradeSize = Math.min(availableCash / Math.max(slotsAvailable, 1), DEMO_MAX_PER_TRADE);
 
-      if (perTradeSize < 0.10) {
-        console.log(`Auto-trade: trade size too small ($${perTradeSize.toFixed(2)})`);
-        return new Response(JSON.stringify({ skipped: true, reason: `Trade size too small: $${perTradeSize.toFixed(2)}` }), {
+      if (perTradeSize < 1) {
+        return new Response(JSON.stringify({ skipped: true, reason: `Demo trade size too small: $${perTradeSize.toFixed(2)}` }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      console.log(`Auto-trade: sizing $${perTradeSize.toFixed(2)}/trade (${slotsAvailable} slots, $${availableCash.toFixed(2)} available, $${cashBalance.toFixed(2)} total)`);
+      console.log(`DEMO auto-trade: sizing $${perTradeSize.toFixed(2)}/trade (${slotsAvailable} slots, $${availableCash.toFixed(2)} available)`);
+
 
       // Step 4: Find arbs — CAUTIOUS MODE: only guaranteed-profit trades resolving in 1-2 days
       const [polymarkets, kalshiMarkets, myriadMarkets] = await Promise.all([
