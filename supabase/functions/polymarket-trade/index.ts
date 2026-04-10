@@ -1965,8 +1965,11 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ──── AUTO TRADE (real execution + balance-based sizing) ────
+    // ──── AUTO TRADE (DEMO MODE — $100K virtual balance, no real orders) ────
     if (action === "auto_trade") {
+      const DEMO_MODE = true;
+      const DEMO_INITIAL_BALANCE = 100000;
+
       const { data: settings } = await supabase
         .from("bot_settings")
         .select("*")
@@ -1985,28 +1988,28 @@ Deno.serve(async (req) => {
         console.log(`Auto-sync completed before trade cycle: ${syncResult.synced} settled, $${syncResult.totalPnl.toFixed(2)} P&L`);
       }
 
-      const privateKey = Deno.env.get("POLYMARKET_PRIVATE_KEY");
-      if (!privateKey) {
-        return new Response(JSON.stringify({ skipped: true, reason: "No private key configured" }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
+      // DEMO: Calculate virtual balance from DB trades
+      const { data: allDemoTrades } = await supabase
+        .from("polymarket_trades")
+        .select("price, size, profit_loss, status")
+        .in("status", ["live", "executed", "settled", "expired"]);
 
-      // Step 1: Fetch Kalshi balance for trade sizing
-      const MIN_BALANCE_FLOOR = 0; // No reserve — use every cent
-      let cashBalance = 0;
-      try {
-        const kalshiBal = await fetchKalshiBalance();
-        cashBalance = kalshiBal.balance;
-        console.log(`Auto-trade: Kalshi cash = $${cashBalance.toFixed(2)}`);
-      } catch (e) {
-        console.error("Failed to fetch Kalshi balance:", e);
+      let totalSpent = 0;
+      let totalRealized = 0;
+      for (const t of (allDemoTrades || [])) {
+        totalSpent += (t.price || 0) * (t.size || 0);
+        if (t.status === "settled" || t.status === "expired" || t.status === "executed") {
+          totalRealized += (t.profit_loss || 0);
+        }
       }
+      const liveCapital = (allDemoTrades || []).filter((t: any) => t.status === "live").reduce((s: number, t: any) => s + (t.price || 0) * (t.size || 0), 0);
+      const cashBalance = DEMO_INITIAL_BALANCE + totalRealized - liveCapital;
+      const MIN_BALANCE_FLOOR = 0;
+      const availableCash = Math.max(0, cashBalance);
+      console.log(`DEMO auto-trade: Virtual cash = $${cashBalance.toFixed(2)} (spent: $${totalSpent.toFixed(2)}, realized: $${totalRealized.toFixed(2)}, live: $${liveCapital.toFixed(2)})`);
 
-      const availableCash = Math.max(0, cashBalance - MIN_BALANCE_FLOOR);
-      if (availableCash < 0.10) {
-        console.log(`Auto-trade: skipped — available cash after $${MIN_BALANCE_FLOOR} floor = $${availableCash.toFixed(2)} (total: $${cashBalance.toFixed(2)})`);
-        return new Response(JSON.stringify({ skipped: true, reason: `Balance too close to $${MIN_BALANCE_FLOOR} floor (available: $${availableCash.toFixed(2)})` }), {
+      if (availableCash < 1) {
+        return new Response(JSON.stringify({ skipped: true, reason: `Demo balance too low: $${availableCash.toFixed(2)}` }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
